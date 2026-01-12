@@ -1,5 +1,11 @@
 # dtctl
 
+[![Release](https://img.shields.io/github/v/release/dynatrace-oss/dtctl?style=flat-square)](https://github.com/dynatrace-oss/dtctl/releases/latest)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/dynatrace-oss/dtctl/build.yml?branch=main&style=flat-square)](https://github.com/dynatrace-oss/dtctl/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dynatrace-oss/dtctl?style=flat-square)](https://goreportcard.com/report/github.com/dynatrace-oss/dtctl)
+[![License](https://img.shields.io/github/license/dynatrace-oss/dtctl?style=flat-square)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/dynatrace-oss/dtctl?style=flat-square)](go.mod)
+
 **Your Dynatrace platform, one command away.**
 
 `dtctl` brings the power of `kubectl` to Dynatrace — manage workflows, dashboards, queries, and more from your terminal. Built for developers who prefer the command line and AI-assisted workflows.
@@ -72,3 +78,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE)
+
+---
+
+<sub>Built with ❤️ and AI</sub>

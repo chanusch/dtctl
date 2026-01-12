@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "dtctl"
+abstract: "kubectl-inspired CLI for managing Dynatrace platform resources"
+authors:
+  - family-names: "Dynatrace"
+    name: "Dynatrace OSS"
+repository-code: "https://github.com/dynatrace-oss/dtctl"
+url: "https://github.com/dynatrace-oss/dtctl"
+license: Apache-2.0
+keywords:
+  - dynatrace
+  - cli
+  - kubernetes
+  - kubectl
+  - devops
+  - observability
