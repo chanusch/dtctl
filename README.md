@@ -24,9 +24,12 @@ dtctl apply -f workflow.yaml                  # Declarative configuration
 ## Quick Start
 
 ```bash
-# Build from source
-git clone https://github.com/dynatrace-oss/dtctl.git && cd dtctl
-make build && make install
+# Install dtctl - download the latest release for your platform:
+# https://github.com/dynatrace-oss/dtctl/releases/latest
+#
+# Or build from source:
+# git clone https://github.com/dynatrace-oss/dtctl.git && cd dtctl
+# make build && make install
 
 # Configure your environment
 dtctl config set-context my-env \

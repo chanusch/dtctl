@@ -1,14 +1,50 @@
 # Installing dtctl
 
-This guide covers building and installing dtctl from source.
+This guide covers installing dtctl on your system.
 
-## Prerequisites
+## Quick Install (Recommended)
+
+**For most users**, download the pre-built binary for your platform:
+
+1. **Download the latest release**: Visit the [releases page](https://github.com/dynatrace-oss/dtctl/releases/latest) and download the appropriate binary for your operating system and architecture.
+
+2. **Extract and install**:
+
+   **Linux/macOS:**
+   ```bash
+   # Extract the archive
+   tar -xzf dtctl-*.tar.gz
+   
+   # Make it executable
+   chmod +x dtctl
+   
+   # Move to a directory in your PATH
+   sudo mv dtctl /usr/local/bin/
+   
+   # Verify installation
+   dtctl version
+   ```
+
+   **Windows:**
+   ```powershell
+   # Extract the zip file to a directory
+   # Add that directory to your PATH, or move dtctl.exe to an existing PATH directory
+   
+   # Verify installation
+   dtctl version
+   ```
+
+3. **Next Steps**: See the [Quick Start Guide](QUICK_START.md) to configure your environment.
+
+## Building from Source (Advanced)
+
+**For developers** who want to build from source or contribute to the project.
+
+### Prerequisites
 
 - Go 1.24 or later
 - Git
 - Make
-
-## Building from Source
 
 ### Clone and Build
 
@@ -44,7 +80,7 @@ Try a few commands to ensure everything works:
 ./bin/dtctl query --help
 ```
 
-## Installation Options
+### Installation Options (Source Builds)
 
 ### Option 1: Use from bin/ Directory
 
@@ -185,6 +221,12 @@ dtctl get <TAB><TAB>
 ```
 
 ## Updating dtctl
+
+### If Installed from Release
+
+Download and install the latest release following the [Quick Install](#quick-install-recommended) steps above.
+
+### If Built from Source
 
 To update to the latest version:
 
