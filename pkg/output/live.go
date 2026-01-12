@@ -64,12 +64,9 @@ func (p *LivePrinter) RunLive(ctx context.Context, fetcher DataFetcher) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	// Set up resize signal handling for fullscreen mode
-	if p.fullscreen {
-		p.resizeCh = make(chan os.Signal, 1)
-		signal.Notify(p.resizeCh, syscall.SIGWINCH)
-		defer signal.Stop(p.resizeCh)
-	}
+	// Set up resize signal handling for fullscreen mode (Unix only)
+	p.setupResizeSignal()
+	defer p.stopResizeSignal()
 
 	// Set up keyboard input handling for 'q' to quit
 	keyCh := make(chan rune, 1)
