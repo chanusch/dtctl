@@ -168,6 +168,41 @@ var configSetCredentialsCmd = &cobra.Command{
 	},
 }
 
+// configSetCmd sets a configuration value
+var configSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set a configuration value",
+	Long: `Set a configuration value such as preferences.
+
+Supported keys:
+  - preferences.editor: Set the default editor for edit commands`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		key := args[0]
+		value := args[1]
+
+		cfg, err := config.Load()
+		if err != nil {
+			// Create new config if it doesn't exist
+			cfg = config.NewConfig()
+		}
+
+		switch key {
+		case "preferences.editor":
+			cfg.Preferences.Editor = value
+		default:
+			return fmt.Errorf("unknown configuration key %q", key)
+		}
+
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+
+		fmt.Printf("Configuration %q set to %q\n", key, value)
+		return nil
+	},
+}
+
 // configMigrateTokensCmd migrates tokens from config file to OS keyring
 var configMigrateTokensCmd = &cobra.Command{
 	Use:   "migrate-tokens",
@@ -216,6 +251,7 @@ func init() {
 	configCmd.AddCommand(configGetContextsCmd)
 	configCmd.AddCommand(configCurrentContextCmd)
 	configCmd.AddCommand(configUseContextCmd)
+	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configSetContextCmd)
 	configCmd.AddCommand(configSetCredentialsCmd)
 	configCmd.AddCommand(configMigrateTokensCmd)
