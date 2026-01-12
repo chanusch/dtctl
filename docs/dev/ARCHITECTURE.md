@@ -65,7 +65,6 @@ getDocumentsCmd := &cobra.Command{
 // $XDG_CONFIG_HOME/dtctl/config (default: ~/.config/dtctl/config)
 viper.SetConfigName("config")
 viper.AddConfigPath(config.ConfigDir())
-viper.AddConfigPath("$HOME/.dtctl") // Legacy fallback
 
 // Bind flags to config
 viper.BindPFlag("context", cmd.Flags().Lookup("context"))
@@ -218,9 +217,6 @@ dtctl follows the XDG Base Directory Specification using the `github.com/adrg/xd
   - Linux: `$XDG_CACHE_HOME/dtctl` (default: `~/.cache/dtctl`)
   - macOS: `~/Library/Caches/dtctl`
   - Windows: `%LOCALAPPDATA%\dtctl`
-
-**Legacy Migration:**
-The `DefaultConfigPath()` function automatically detects and migrates configurations from the legacy `~/.dtctl/config` path to the XDG-compliant location on first access. The legacy config is preserved as a backup.
 
 ### Validation: validator + custom logic
 

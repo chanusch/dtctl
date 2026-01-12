@@ -37,7 +37,7 @@ func NewPrinterWithWriter(format string, writer io.Writer) Printer {
 	})
 }
 
-// NewPrinterWithOptions creates a new printer with specific options (legacy)
+// NewPrinterWithOptions creates a new printer with specific options
 func NewPrinterWithOptions(format string, writer io.Writer, plainMode bool) Printer {
 	return NewPrinterWithOpts(PrinterOptions{
 		Format:    format,

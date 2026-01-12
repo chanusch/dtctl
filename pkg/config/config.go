@@ -44,63 +44,9 @@ type Preferences struct {
 }
 
 // DefaultConfigPath returns the default config file path following XDG Base Directory spec
-// Priority order:
-// 1. XDG_CONFIG_HOME/dtctl/config (typically ~/.config/dtctl/config)
-// 2. Legacy path ~/.dtctl/config (for backwards compatibility, will be migrated)
+// Returns: XDG_CONFIG_HOME/dtctl/config (typically ~/.config/dtctl/config)
 func DefaultConfigPath() string {
-	// XDG-compliant path
-	xdgPath := filepath.Join(xdg.ConfigHome, "dtctl", "config")
-
-	// Legacy path for backwards compatibility
-	legacyPath := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		legacyPath = filepath.Join(home, ".dtctl", "config")
-	}
-
-	// If XDG path exists, use it
-	if _, err := os.Stat(xdgPath); err == nil {
-		return xdgPath
-	}
-
-	// If legacy path exists and XDG path doesn't, migrate
-	if legacyPath != "" {
-		if _, err := os.Stat(legacyPath); err == nil {
-			// Legacy config exists, attempt migration
-			if err := migrateLegacyConfig(legacyPath, xdgPath); err == nil {
-				return xdgPath
-			}
-			// Migration failed, fall back to legacy path
-			return legacyPath
-		}
-	}
-
-	// Default to XDG path for new installations
-	return xdgPath
-}
-
-// migrateLegacyConfig migrates config from legacy path to XDG path
-func migrateLegacyConfig(legacyPath, xdgPath string) error {
-	// Read legacy config
-	data, err := os.ReadFile(legacyPath)
-	if err != nil {
-		return fmt.Errorf("failed to read legacy config: %w", err)
-	}
-
-	// Create XDG config directory
-	if err := os.MkdirAll(filepath.Dir(xdgPath), 0700); err != nil {
-		return fmt.Errorf("failed to create XDG config directory: %w", err)
-	}
-
-	// Write to XDG path
-	if err := os.WriteFile(xdgPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write XDG config: %w", err)
-	}
-
-	// Successfully migrated - optionally remove legacy config
-	// For safety, we keep the legacy config as a backup
-	// Users can manually remove ~/.dtctl after verifying the migration
-
-	return nil
+	return filepath.Join(xdg.ConfigHome, "dtctl", "config")
 }
 
 // ConfigDir returns the config directory path following XDG Base Directory spec

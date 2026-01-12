@@ -136,7 +136,7 @@ func (e *DQLExecutor) ExecuteWithOptions(query string, opts DQLExecuteOptions) e
 	return e.printResults(result, opts)
 }
 
-// ExecuteQuery executes a DQL query and returns the raw result (legacy method)
+// ExecuteQuery executes a DQL query and returns the raw result
 func (e *DQLExecutor) ExecuteQuery(query string) (*DQLQueryResponse, error) {
 	return e.ExecuteQueryWithOptions(query, DQLExecuteOptions{})
 }
@@ -372,7 +372,7 @@ func (e *DQLExecutor) printResults(result *DQLQueryResponse, opts DQLExecuteOpti
 	return printer.Print(result)
 }
 
-// pollForResults polls the query:poll endpoint until the query completes (legacy method)
+// pollForResults polls the query:poll endpoint until the query completes
 func (e *DQLExecutor) pollForResults(requestToken string) (DQLQueryResponse, error) {
 	return e.pollForResultsWithOptions(requestToken, DQLExecuteOptions{})
 }

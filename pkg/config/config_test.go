@@ -264,46 +264,6 @@ func TestDataDir(t *testing.T) {
 	}
 }
 
-func TestMigrateLegacyConfig(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtctl-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	legacyPath := filepath.Join(tmpDir, "legacy", "config")
-	xdgPath := filepath.Join(tmpDir, "xdg", "config")
-
-	// Create legacy config
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0700); err != nil {
-		t.Fatalf("Failed to create legacy dir: %v", err)
-	}
-
-	legacyContent := []byte("apiVersion: v1\nkind: Config\ncurrent-context: test\n")
-	if err := os.WriteFile(legacyPath, legacyContent, 0600); err != nil {
-		t.Fatalf("Failed to write legacy config: %v", err)
-	}
-
-	// Migrate
-	if err := migrateLegacyConfig(legacyPath, xdgPath); err != nil {
-		t.Fatalf("migrateLegacyConfig() error = %v", err)
-	}
-
-	// Verify XDG config exists
-	if _, err := os.Stat(xdgPath); os.IsNotExist(err) {
-		t.Error("XDG config was not created")
-	}
-
-	// Verify content matches
-	migratedContent, err := os.ReadFile(xdgPath)
-	if err != nil {
-		t.Fatalf("Failed to read migrated config: %v", err)
-	}
-	if string(migratedContent) != string(legacyContent) {
-		t.Error("Migrated content does not match original")
-	}
-}
-
 func TestConfig_MultipleContexts(t *testing.T) {
 	cfg := NewConfig()
 
@@ -421,32 +381,5 @@ func TestSaveTo_CreateDirectory(t *testing.T) {
 	}
 	if dirInfo.Mode().Perm() != 0700 {
 		t.Errorf("Directory permissions = %v, want 0700", dirInfo.Mode().Perm())
-	}
-}
-
-func TestMigrateLegacyConfig_ReadError(t *testing.T) {
-	err := migrateLegacyConfig("/nonexistent/path", "/tmp/target")
-	if err == nil {
-		t.Error("Expected error for non-existent legacy path")
-	}
-}
-
-func TestMigrateLegacyConfig_WriteError(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dtctl-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Create source file
-	sourcePath := filepath.Join(tmpDir, "source")
-	if err := os.WriteFile(sourcePath, []byte("content"), 0600); err != nil {
-		t.Fatalf("Failed to write source: %v", err)
-	}
-
-	// Try to write to invalid path (directory that can't be created)
-	err = migrateLegacyConfig(sourcePath, "/dev/null/invalid/path")
-	if err == nil {
-		t.Error("Expected error for invalid target path")
 	}
 }

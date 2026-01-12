@@ -924,7 +924,7 @@ dtctl get documents -o wide
 - **macOS**: `~/Library/Application Support/dtctl/config`
 - **Windows**: `%LOCALAPPDATA%\dtctl\config`
 
-**Note**: dtctl follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) and adapts to platform conventions. If you have an existing configuration at `~/.dtctl/config`, it will be automatically migrated to the platform-appropriate location on first use.
+**Note**: dtctl follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) and adapts to platform conventions.
 
 ```yaml
 apiVersion: v1

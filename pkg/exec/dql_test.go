@@ -113,7 +113,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_CustomHeaders(t *testing.T) {
 }
 
 func TestDQLExecutor_ExecuteQuery_BackwardCompatibility(t *testing.T) {
-	// Test that the legacy ExecuteQuery method still works
+	// Test that the ExecuteQuery method still works for backward compatibility
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := DQLQueryResponse{
 			State: "SUCCEEDED",

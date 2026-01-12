@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
@@ -212,11 +211,6 @@ func initConfig() {
 		// Use XDG-compliant config directory
 		configDir := config.ConfigDir()
 		viper.AddConfigPath(configDir)
-
-		// Also check legacy path for backwards compatibility
-		if home, err := os.UserHomeDir(); err == nil {
-			viper.AddConfigPath(filepath.Join(home, ".dtctl"))
-		}
 
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("config")
