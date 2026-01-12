@@ -16,6 +16,7 @@ import (
 var taskName string
 var followLogs bool
 var allTaskLogs bool
+var tasksOnlyLogs bool
 
 // logsCmd represents the logs command
 var logsCmd = &cobra.Command{
@@ -32,13 +33,16 @@ var logsWorkflowExecutionCmd = &cobra.Command{
 	Long: `Print logs for a workflow execution or a specific task within it.
 
 Examples:
-  # Get execution log (default API response)
+  # Get execution log only (workflow-level log)
   dtctl logs workflow-execution <execution-id>
   dtctl logs wfe <execution-id>
 
-  # Get full logs for all tasks with headers
+  # Get all logs (workflow execution log + all task logs)
   dtctl logs wfe <execution-id> --all
   dtctl logs wfe <execution-id> -a
+
+  # Get task logs only (all tasks with headers)
+  dtctl logs wfe <execution-id> --tasks
 
   # Get logs for a specific task
   dtctl logs wfe <execution-id> --task <task-name>
@@ -51,6 +55,14 @@ Examples:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		executionID := args[0]
+
+		// Validate flag combinations
+		if allTaskLogs && tasksOnlyLogs {
+			return fmt.Errorf("cannot use both --all and --tasks flags together")
+		}
+		if taskName != "" && (allTaskLogs || tasksOnlyLogs) {
+			return fmt.Errorf("cannot use --task with --all or --tasks flags")
+		}
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -65,7 +77,7 @@ Examples:
 		handler := workflow.NewExecutionHandler(c)
 
 		if followLogs {
-			return followExecutionLogs(handler, executionID, taskName, allTaskLogs)
+			return followExecutionLogs(handler, executionID, taskName, allTaskLogs, tasksOnlyLogs)
 		}
 
 		var logs string
@@ -77,13 +89,19 @@ Examples:
 				return err
 			}
 		} else if allTaskLogs {
-			// Get full logs for all tasks with headers
+			// Get workflow execution log + all task logs
+			logs, err = handler.GetCompleteExecutionLog(executionID)
+			if err != nil {
+				return err
+			}
+		} else if tasksOnlyLogs {
+			// Get task logs only (all tasks with headers)
 			logs, err = handler.GetFullExecutionLog(executionID)
 			if err != nil {
 				return err
 			}
 		} else {
-			// Get execution log (default API response)
+			// Get execution log only (workflow-level log)
 			logs, err = handler.GetExecutionLog(executionID)
 			if err != nil {
 				return err
@@ -101,7 +119,7 @@ Examples:
 }
 
 // followExecutionLogs streams logs in real-time until the execution completes
-func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task string, allTasks bool) error {
+func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task string, allLogs, tasksOnly bool) error {
 	// Set up signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -130,7 +148,9 @@ func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task s
 
 		if task != "" {
 			logs, err = handler.GetTaskLog(executionID, task)
-		} else if allTasks {
+		} else if allLogs {
+			logs, err = handler.GetCompleteExecutionLog(executionID)
+		} else if tasksOnly {
 			logs, err = handler.GetFullExecutionLog(executionID)
 		} else {
 			logs, err = handler.GetExecutionLog(executionID)
@@ -157,7 +177,9 @@ func followExecutionLogs(handler *workflow.ExecutionHandler, executionID, task s
 			// Final log fetch to ensure we have everything
 			if task != "" {
 				logs, _ = handler.GetTaskLog(executionID, task)
-			} else if allTasks {
+			} else if allLogs {
+				logs, _ = handler.GetCompleteExecutionLog(executionID)
+			} else if tasksOnly {
 				logs, _ = handler.GetFullExecutionLog(executionID)
 			} else {
 				logs, _ = handler.GetExecutionLog(executionID)
@@ -189,5 +211,6 @@ func init() {
 	logsCmd.AddCommand(logsWorkflowExecutionCmd)
 	logsWorkflowExecutionCmd.Flags().StringVarP(&taskName, "task", "t", "", "Get logs for a specific task")
 	logsWorkflowExecutionCmd.Flags().BoolVarP(&followLogs, "follow", "f", false, "Follow logs in real-time until execution completes")
-	logsWorkflowExecutionCmd.Flags().BoolVarP(&allTaskLogs, "all", "a", false, "Get full logs for all tasks with headers")
+	logsWorkflowExecutionCmd.Flags().BoolVarP(&allTaskLogs, "all", "a", false, "Get all logs (workflow execution log + all task logs)")
+	logsWorkflowExecutionCmd.Flags().BoolVar(&tasksOnlyLogs, "tasks", false, "Get task logs only (all tasks with headers)")
 }

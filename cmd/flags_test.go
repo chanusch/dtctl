@@ -484,7 +484,7 @@ func TestLogsFlags(t *testing.T) {
 	// Check workflow execution logs subcommand
 	var logsWorkflowCmd *cobra.Command
 	for _, cmd := range logsCmd.Commands() {
-		if cmd.Name() == "execution" || cmd.Name() == "workflow" {
+		if cmd.Name() == "workflow-execution" || cmd.Name() == "execution" || cmd.Name() == "workflow" {
 			logsWorkflowCmd = cmd
 			break
 		}
@@ -502,6 +502,7 @@ func TestLogsFlags(t *testing.T) {
 		{"task", ""},
 		{"follow", "false"},
 		{"all", "false"},
+		{"tasks", "false"},
 	}
 
 	for _, tt := range flags {

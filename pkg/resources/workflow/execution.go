@@ -248,6 +248,39 @@ func (h *ExecutionHandler) GetFullExecutionLog(executionID string) (string, erro
 	return builder.String(), nil
 }
 
+// GetCompleteExecutionLog retrieves both the workflow execution log and all task logs
+func (h *ExecutionHandler) GetCompleteExecutionLog(executionID string) (string, error) {
+	var builder strings.Builder
+
+	// Get workflow execution log first
+	execLog, err := h.GetExecutionLog(executionID)
+	if err != nil {
+		return "", err
+	}
+
+	if execLog != "" {
+		builder.WriteString("=== Workflow Execution Log ===\n")
+		builder.WriteString(execLog)
+		// Ensure log ends with newline
+		if !strings.HasSuffix(execLog, "\n") {
+			builder.WriteString("\n")
+		}
+		builder.WriteString("\n")
+	}
+
+	// Get all task logs
+	taskLogs, err := h.GetFullExecutionLog(executionID)
+	if err != nil {
+		return "", err
+	}
+
+	if taskLogs != "" {
+		builder.WriteString(taskLogs)
+	}
+
+	return builder.String(), nil
+}
+
 // sortTasksByStartTime sorts tasks by their start time (nil times go last)
 func sortTasksByStartTime(tasks []TaskExecution) {
 	for i := 0; i < len(tasks)-1; i++ {
