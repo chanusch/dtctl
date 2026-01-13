@@ -74,7 +74,7 @@ func (p *LivePrinter) RunLive(ctx context.Context, fetcher DataFetcher) error {
 		// Save terminal state and set raw mode
 		oldState, err := term.MakeRaw(fd)
 		if err == nil {
-			defer func() { _ = term.Restore(fd, oldState) }()
+			defer func() { _ = term.Restore(fd, oldState)
 			// Read keyboard input in background
 			go func() {
 				buf := make([]byte, 1)

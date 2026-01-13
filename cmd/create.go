@@ -969,7 +969,7 @@ func init() {
 	// Workflow flags
 	createWorkflowCmd.Flags().StringP("file", "f", "", "file containing workflow definition (required)")
 	createWorkflowCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
-	createWorkflowCmd.MarkFlagRequired("file")
+	_ = createWorkflowCmd.MarkFlagRequired("file")
 
 	// Notebook flags
 	createNotebookCmd.Flags().StringP("file", "f", "", "file containing notebook definition (required)")
@@ -977,7 +977,7 @@ func init() {
 	createNotebookCmd.Flags().String("description", "", "description for the notebook")
 	createNotebookCmd.Flags().String("id", "", "custom ID for the notebook (auto-generated if not provided)")
 	createNotebookCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
-	createNotebookCmd.MarkFlagRequired("file")
+	_ = createNotebookCmd.MarkFlagRequired("file")
 
 	// Dashboard flags
 	createDashboardCmd.Flags().StringP("file", "f", "", "file containing dashboard definition (required)")
@@ -985,21 +985,21 @@ func init() {
 	createDashboardCmd.Flags().String("description", "", "description for the dashboard")
 	createDashboardCmd.Flags().String("id", "", "custom ID for the dashboard (auto-generated if not provided)")
 	createDashboardCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
-	createDashboardCmd.MarkFlagRequired("file")
+	_ = createDashboardCmd.MarkFlagRequired("file")
 
 	// Settings flags
 	createSettingsCmd.Flags().StringP("file", "f", "", "file containing settings value (required)")
 	createSettingsCmd.Flags().String("schema", "", "schema ID (required)")
 	createSettingsCmd.Flags().String("scope", "", "scope for the settings object (required)")
 	createSettingsCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
-	createSettingsCmd.MarkFlagRequired("file")
-	createSettingsCmd.MarkFlagRequired("schema")
-	createSettingsCmd.MarkFlagRequired("scope")
+	_ = createSettingsCmd.MarkFlagRequired("file")
+	_ = createSettingsCmd.MarkFlagRequired("schema")
+	_ = createSettingsCmd.MarkFlagRequired("scope")
 
 	// SLO flags
 	createSLOCmd.Flags().StringP("file", "f", "", "file containing SLO definition (required)")
 	createSLOCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
-	createSLOCmd.MarkFlagRequired("file")
+	_ = createSLOCmd.MarkFlagRequired("file")
 
 	// Bucket flags
 	createBucketCmd.Flags().StringP("file", "f", "", "file containing bucket definition")

@@ -7,7 +7,9 @@ import (
 	"strings"
 )
 
-// Sparkline characters from lowest to highest
+// sparkChars are characters from lowest to highest
+//
+//nolint:unused // Reserved for future sparkline features
 var sparkChars = []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 
 // SparklinePrinter prints timeseries data as compact sparklines
@@ -120,11 +122,15 @@ func (p *SparklinePrinter) renderSparklines(ts *TimeseriesData) error {
 }
 
 // generateSparkline converts a slice of float64 values to a sparkline string with fixed width
+//
+//nolint:unused // Reserved for future sparkline features
 func generateSparkline(values []float64) string {
 	return generateSparklineWithWidth(values, DefaultChartWidth)
 }
 
 // generateSparklineWithWidth converts a slice of float64 values to a sparkline string with specified width
+//
+//nolint:unused // Reserved for future sparkline features
 func generateSparklineWithWidth(values []float64, width int) string {
 	if len(values) == 0 {
 		return ""

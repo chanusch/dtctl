@@ -300,7 +300,9 @@ func init() {
 	}
 }
 
-// Helper to format recipients for display
+// formatRecipients formats recipients for display
+//
+//nolint:unused // Reserved for future share features
 func formatRecipients(recipients []document.SsoEntity) string {
 	var parts []string
 	for _, r := range recipients {

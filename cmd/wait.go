@@ -176,16 +176,16 @@ Examples:
 		timezone, _ := cmd.Flags().GetString("timezone")
 
 		queryOpts := exec.DQLExecuteOptions{
-			OutputFormat:             outputFormat,
-			MaxResultRecords:         maxResultRecords,
-			MaxResultBytes:           maxResultBytes,
-			DefaultScanLimitGbytes:   defaultScanLimitGbytes,
-			DefaultSamplingRatio:     defaultSamplingRatio,
-			FetchTimeoutSeconds:      fetchTimeoutSeconds,
-			DefaultTimeframeStart:    defaultTimeframeStart,
-			DefaultTimeframeEnd:      defaultTimeframeEnd,
-			Locale:                   locale,
-			Timezone:                 timezone,
+			OutputFormat:           outputFormat,
+			MaxResultRecords:       maxResultRecords,
+			MaxResultBytes:         maxResultBytes,
+			DefaultScanLimitGbytes: defaultScanLimitGbytes,
+			DefaultSamplingRatio:   defaultSamplingRatio,
+			FetchTimeoutSeconds:    fetchTimeoutSeconds,
+			DefaultTimeframeStart:  defaultTimeframeStart,
+			DefaultTimeframeEnd:    defaultTimeframeEnd,
+			Locale:                 locale,
+			Timezone:               timezone,
 		}
 
 		// Create wait config
@@ -240,7 +240,7 @@ func init() {
 
 	// Condition flag (required)
 	waitQueryCmd.Flags().String("for", "", "condition to wait for (required: count=N, count-gte=N, count-gt=N, count-lte=N, count-lt=N, any, none)")
-	waitQueryCmd.MarkFlagRequired("for")
+	_ = waitQueryCmd.MarkFlagRequired("for")
 
 	// Query input flags
 	waitQueryCmd.Flags().StringP("file", "f", "", "read query from file (use - for stdin)")

@@ -263,6 +263,8 @@ func getGradientColor(position float64) string {
 }
 
 // getValueGradientColor returns color based on value (0.0 = low/green, 1.0 = high/red)
+//
+//nolint:unused // Reserved for future gradient features
 func getValueGradientColor(normalized float64) string {
 	if normalized < 0.5 {
 		return BrightGreen
@@ -273,6 +275,8 @@ func getValueGradientColor(normalized float64) string {
 }
 
 // getInverseGradientColor returns color (0.0 = low/red, 1.0 = high/green)
+//
+//nolint:unused // Reserved for future gradient features
 func getInverseGradientColor(normalized float64) string {
 	if normalized < 0.25 {
 		return BrightRed
@@ -282,7 +286,9 @@ func getInverseGradientColor(normalized float64) string {
 	return BrightGreen
 }
 
-// Bar rendering
+// barChars for rendering bars
+//
+//nolint:unused // Reserved for future bar chart features
 var barChars = []rune{'▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'}
 
 // RenderGradientBar renders a simple horizontal bar (white filled, dim empty)

@@ -222,9 +222,9 @@ func init() {
 	rootCmd.PersistentFlags().Int64Var(&chunkSize, "chunk-size", 500, "Return large lists in chunks rather than all at once. Pass 0 to disable.")
 
 	// Bind flags to viper
-	viper.BindPFlag("context", rootCmd.PersistentFlags().Lookup("context"))
-	viper.BindPFlag("output", rootCmd.PersistentFlags().Lookup("output"))
-	viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
+	_ = viper.BindPFlag("context", rootCmd.PersistentFlags().Lookup("context"))
+	_ = viper.BindPFlag("output", rootCmd.PersistentFlags().Lookup("output"))
+	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
 }
 
 // initConfig reads in config file and ENV variables if set

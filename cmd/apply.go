@@ -117,5 +117,5 @@ func init() {
 	applyCmd.Flags().Bool("dry-run", false, "preview changes without applying")
 	applyCmd.Flags().Bool("show-diff", false, "show diff of changes when updating existing resources")
 
-	applyCmd.MarkFlagRequired("file")
+	_ = applyCmd.MarkFlagRequired("file")
 }
