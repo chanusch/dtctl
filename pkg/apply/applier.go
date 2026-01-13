@@ -322,8 +322,8 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 		}
 	}
 
-	// Update the existing document
-	result, err := handler.Update(id, metadata.Version, contentData, "application/json")
+	// Update the existing document (including metadata if name or description provided)
+	result, err := handler.UpdateWithMetadata(id, metadata.Version, contentData, "application/json", name, description)
 	if err != nil {
 		return fmt.Errorf("failed to apply %s: %w", docType, err)
 	}

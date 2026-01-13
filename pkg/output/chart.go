@@ -210,7 +210,7 @@ func (p *ChartPrinter) extractFromRecord(record map[string]interface{}) (*Timese
 
 	// Parse interval (nanoseconds as string)
 	var intervalNs int64
-	fmt.Sscanf(intervalStr, "%d", &intervalNs)
+	_, _ = fmt.Sscanf(intervalStr, "%d", &intervalNs)
 	interval := time.Duration(intervalNs)
 
 	// Find metric columns (arrays of numbers)
@@ -522,6 +522,8 @@ func getSeriesColors(count int) []asciigraph.AnsiColor {
 }
 
 // formatDuration formats a duration for display
+//
+//nolint:unused // Reserved for future chart features
 func formatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -536,6 +538,8 @@ func formatDuration(d time.Duration) string {
 }
 
 // truncateString truncates a string to maxLen characters
+//
+//nolint:unused // Reserved for future chart features
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -544,6 +548,8 @@ func truncateString(s string, maxLen int) string {
 }
 
 // containsTimeseries checks if the data likely contains timeseries
+//
+//nolint:unused // Reserved for future chart features
 func containsTimeseries(obj interface{}) bool {
 	switch v := obj.(type) {
 	case map[string]interface{}:
@@ -571,7 +577,9 @@ func containsTimeseries(obj interface{}) bool {
 	return false
 }
 
-// Helper to check if string contains any of the substrings
+// containsAny checks if string contains any of the substrings
+//
+//nolint:unused // Reserved for future chart features
 func containsAny(s string, substrs ...string) bool {
 	for _, sub := range substrs {
 		if strings.Contains(s, sub) {

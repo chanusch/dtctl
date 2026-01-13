@@ -442,7 +442,7 @@ Examples:
 		var result *copilot.ConversationResponse
 
 		if stream {
-			result, err = handler.ChatWithOptions(message, opts, func(chunk copilot.StreamChunk) error {
+			_, err = handler.ChatWithOptions(message, opts, func(chunk copilot.StreamChunk) error {
 				if chunk.Data != nil && len(chunk.Data.Tokens) > 0 {
 					for _, token := range chunk.Data.Tokens {
 						fmt.Print(token)
@@ -734,7 +734,7 @@ Examples:
 				}
 
 				// Check if we have results
-				if result.EvaluationResults != nil && len(result.EvaluationResults) > 0 {
+				if len(result.EvaluationResults) > 0 {
 					fmt.Printf("\nSLO Evaluation Complete\n")
 
 					// Check output format

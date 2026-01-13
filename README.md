@@ -51,6 +51,7 @@ dtctl config set-credentials my-token --token "dt0s16.YOUR_TOKEN"
 # Go!
 dtctl get workflows
 dtctl query "fetch logs | limit 10"
+dtctl create lookup -f error_codes.csv --path /lookups/production/errors --lookup-field code
 ```
 
 ## What Can It Do?
@@ -62,7 +63,8 @@ dtctl query "fetch logs | limit 10"
 | DQL Queries | execute with template variables |
 | SLOs | get, create, delete, apply, evaluate |
 | Settings | get, create, delete, apply |
-| Buckets | get, describe |
+| Buckets | get, describe, create, delete |
+| Lookup Tables | get, describe, create, delete (CSV auto-detection) |
 | And more... | OpenPipeline, EdgeConnect, Davis AI |
 
 ## Documentation

@@ -88,7 +88,8 @@ func ParseMultipartDocument(resp *resty.Response) (*Document, error) {
 // CreateUpdateRequest creates form data for updating a document
 func CreateUpdateRequest(content []byte, contentType string) (map[string]string, error) {
 	if contentType == "" {
-		contentType = "application/json"
+		// Default content type for update operations
+		contentType = "application/json" //nolint:ineffassign,wastedassign // Variable may be used in future updates
 	}
 
 	// For update operations, we only need to send the content

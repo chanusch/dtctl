@@ -12,6 +12,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/bucket"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/edgeconnect"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/lookup"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
@@ -56,6 +57,17 @@ func (c *CleanupTracker) TrackDocument(resourceType, id, name string, version in
 		Name:    name,
 		Version: version,
 	})
+}
+
+// Untrack removes a resource from cleanup tracking (when manually deleted in test)
+func (c *CleanupTracker) Untrack(resourceType, id string) {
+	for i, r := range c.resources {
+		if r.Type == resourceType && r.ID == id {
+			// Remove from slice
+			c.resources = append(c.resources[:i], c.resources[i+1:]...)
+			return
+		}
+	}
 }
 
 // Cleanup deletes all tracked resources in reverse order
@@ -178,6 +190,15 @@ func (c *CleanupTracker) deleteResource(resource Resource) error {
 		}
 		return err
 
+	case "lookup":
+		handler := lookup.NewHandler(c.client)
+		err := handler.Delete(resource.ID)
+		// Ignore 404 errors - resource already deleted is OK
+		if err != nil && isNotFoundError(err) {
+			return nil
+		}
+		return err
+
 	default:
 		return fmt.Errorf("unknown resource type: %s", resource.Type)
 	}
@@ -259,6 +280,15 @@ func (c *CleanupTracker) verifyDeletion(resource Resource) error {
 			return nil
 		}
 		return fmt.Errorf("edgeconnect %s still exists after deletion", resource.ID)
+
+	case "lookup":
+		handler := lookup.NewHandler(c.client)
+		_, err := handler.Get(resource.ID)
+		if err != nil {
+			// We expect an error (404) - this is success
+			return nil
+		}
+		return fmt.Errorf("lookup %s still exists after deletion", resource.ID)
 
 	default:
 		return fmt.Errorf("unknown resource type: %s", resource.Type)

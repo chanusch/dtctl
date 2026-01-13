@@ -320,7 +320,7 @@ func TestFlagParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rootCmd.ParseFlags(tt.args)
+			_ = rootCmd.ParseFlags(tt.args)
 
 			flag := rootCmd.PersistentFlags().Lookup(tt.flagName)
 			if flag == nil {
@@ -332,7 +332,7 @@ func TestFlagParsing(t *testing.T) {
 			}
 
 			// Reset for next test
-			flag.Value.Set(flag.DefValue)
+			_ = flag.Value.Set(flag.DefValue)
 			flag.Changed = false
 		})
 	}

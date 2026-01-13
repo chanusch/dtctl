@@ -58,6 +58,7 @@ This document tracks the current implementation status of dtctl. For future plan
 | **group** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 | **analyzer** | ✅ | ✅ | - | - | - | - | ✅ | - | - | - | - | - |
 | **copilot** | ✅ | - | - | - | - | - | ✅ | - | - | - | - | - |
+| **lookup** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
 
 ### DQL Query Features
 - [x] Inline queries: `dtctl query "fetch logs | limit 10"`

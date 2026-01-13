@@ -75,6 +75,6 @@ func CreateTempFile(t *testing.T, content string, pattern string) string {
 func ResetCommandFlags(cmd *cobra.Command) {
 	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 		flag.Changed = false
-		flag.Value.Set(flag.DefValue)
+		_ = flag.Value.Set(flag.DefValue)
 	})
 }

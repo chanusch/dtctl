@@ -373,6 +373,8 @@ func (e *DQLExecutor) printResults(result *DQLQueryResponse, opts DQLExecuteOpti
 }
 
 // pollForResults polls the query:poll endpoint until the query completes
+//
+//nolint:unused // Reserved for future polling features
 func (e *DQLExecutor) pollForResults(requestToken string) (DQLQueryResponse, error) {
 	return e.pollForResultsWithOptions(requestToken, DQLExecuteOptions{})
 }

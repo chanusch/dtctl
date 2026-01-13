@@ -53,7 +53,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_CustomHeaders(t *testing.T) {
 			var receivedRequest DQLQueryRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Decode the request body to check parameters
-				json.NewDecoder(r.Body).Decode(&receivedRequest)
+				_ = json.NewDecoder(r.Body).Decode(&receivedRequest)
 
 				// Return a successful query response
 				response := DQLQueryResponse{
@@ -65,7 +65,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_CustomHeaders(t *testing.T) {
 					},
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(response)
+				_ = json.NewEncoder(w).Encode(response)
 			}))
 			defer server.Close()
 
@@ -124,7 +124,7 @@ func TestDQLExecutor_ExecuteQuery_BackwardCompatibility(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -159,7 +159,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_PollingWithBodyParams(t *testing.T)
 
 		if r.URL.Path == "/platform/storage/query/v1/query:execute" {
 			// Capture the initial request body
-			json.NewDecoder(r.Body).Decode(&receivedRequest)
+			_ = json.NewDecoder(r.Body).Decode(&receivedRequest)
 
 			// First call - return RUNNING state
 			response := DQLQueryResponse{
@@ -167,7 +167,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_PollingWithBodyParams(t *testing.T)
 				RequestToken: "test-token-123",
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 		} else if r.URL.Path == "/platform/storage/query/v1/query:poll" {
 			// Poll call - just return success
 			response := DQLQueryResponse{
@@ -179,7 +179,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_PollingWithBodyParams(t *testing.T)
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 		}
 	}))
 	defer server.Close()
@@ -249,7 +249,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_ErrorHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.statusCode)
-				w.Write([]byte(tt.responseBody))
+				_, _ = w.Write([]byte(tt.responseBody))
 			}))
 			defer server.Close()
 
@@ -432,7 +432,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_AllParameters(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture the request body
-		json.NewDecoder(r.Body).Decode(&receivedRequest)
+		_ = json.NewDecoder(r.Body).Decode(&receivedRequest)
 
 		response := DQLQueryResponse{
 			State: "SUCCEEDED",
@@ -443,7 +443,7 @@ func TestDQLExecutor_ExecuteQueryWithOptions_AllParameters(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 

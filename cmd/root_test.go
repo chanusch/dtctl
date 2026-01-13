@@ -39,7 +39,7 @@ func TestGlobalFlags_Config(t *testing.T) {
 				configPath = filepath.Join(tmpDir, tt.configFile)
 				cfg := config.NewConfig()
 				cfg.SetContext("test", "https://test.dt.com", "test-token")
-				cfg.SetToken("test-token", "dt0c01.test")
+				_ = cfg.SetToken("test-token", "dt0c01.test")
 				cfg.CurrentContext = "test"
 				if err := cfg.SaveTo(configPath); err != nil {
 					t.Fatalf("failed to save config: %v", err)
@@ -394,7 +394,7 @@ func TestInitConfig(t *testing.T) {
 				configPath := filepath.Join(tmpDir, tt.configFileName)
 				cfg := config.NewConfig()
 				cfg.SetContext("test", "https://test.dt.com", "token")
-				cfg.SaveTo(configPath)
+				_ = cfg.SaveTo(configPath)
 				cfgFile = configPath
 			} else {
 				cfgFile = ""
@@ -550,7 +550,7 @@ func TestEnvironmentVariableBinding(t *testing.T) {
 			// Bind flag
 			rootCmd.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
 				if flag.Name == tt.flagKey {
-					viper.BindPFlag(tt.flagKey, flag)
+					_ = viper.BindPFlag(tt.flagKey, flag)
 				}
 			})
 

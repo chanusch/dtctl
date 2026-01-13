@@ -448,6 +448,97 @@ func (h *Handler) Update(id string, version int, content []byte, contentType str
 	return doc, nil
 }
 
+// UpdateWithMetadata updates a document's content and optionally its metadata (name, description)
+func (h *Handler) UpdateWithMetadata(id string, version int, content []byte, contentType string, name string, description string) (*Document, error) {
+	if contentType == "" {
+		contentType = "application/json"
+	}
+
+	r := h.client.HTTP().R().
+		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version)).
+		SetMultipartField("content", "content", contentType, bytes.NewReader(content))
+
+	// Add name and description if provided
+	if name != "" {
+		r.SetMultipartFormData(map[string]string{"name": name})
+	}
+	if description != "" {
+		r.SetMultipartFormData(map[string]string{"description": description})
+	}
+
+	resp, err := r.Patch(fmt.Sprintf("/platform/document/v1/documents/%s", id))
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to update document: %w", err)
+	}
+
+	if resp.IsError() {
+		switch resp.StatusCode() {
+		case 404:
+			return nil, fmt.Errorf("document %q not found", id)
+		case 403:
+			return nil, fmt.Errorf("access denied to document %q", id)
+		case 409:
+			return nil, fmt.Errorf("document version conflict (document was modified)")
+		default:
+			return nil, fmt.Errorf("failed to update document: status %d: %s", resp.StatusCode(), resp.String())
+		}
+	}
+
+	// Parse the response - API may return JSON or multipart
+	respContentType := resp.Header().Get("Content-Type")
+	var doc *Document
+
+	if strings.HasPrefix(respContentType, "multipart/") {
+		doc, err = ParseMultipartDocument(resp)
+		if err != nil {
+			// Operation succeeded (2xx) but response parsing failed
+			// Return a minimal document with what we know rather than failing
+			doc = &Document{
+				ID:      id,
+				Version: version + 1, // Assume version incremented
+			}
+			// Try to extract name from response
+			if resName := extractNameFromResponse(resp.Body()); resName != "" {
+				doc.Name = resName
+			} else if name != "" {
+				doc.Name = name
+			}
+		}
+	} else {
+		// JSON response - UpdateDocumentMetadata wraps documentMetadata
+		var updateResp struct {
+			DocumentMetadata DocumentMetadata `json:"documentMetadata"`
+		}
+		if err := json.Unmarshal(resp.Body(), &updateResp); err != nil {
+			// Operation succeeded (2xx) but response parsing failed
+			// Return a minimal document with what we know rather than failing
+			doc = &Document{
+				ID:      id,
+				Version: version + 1, // Assume version incremented
+			}
+			// Try to extract name from response
+			if resName := extractNameFromResponse(resp.Body()); resName != "" {
+				doc.Name = resName
+			} else if name != "" {
+				doc.Name = name
+			}
+		} else {
+			metadata := updateResp.DocumentMetadata
+			doc = &Document{
+				ID:        metadata.ID,
+				Name:      metadata.Name,
+				Type:      metadata.Type,
+				Version:   metadata.Version,
+				Owner:     metadata.Owner,
+				IsPrivate: metadata.IsPrivate,
+			}
+		}
+	}
+
+	return doc, nil
+}
+
 // extractIDFromResponse attempts to extract an ID from a response body
 // This is a fallback for when normal response parsing fails
 func extractIDFromResponse(body []byte) string {

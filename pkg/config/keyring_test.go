@@ -88,7 +88,7 @@ func TestContains(t *testing.T) {
 
 func TestGetTokenWithFallback(t *testing.T) {
 	cfg := NewConfig()
-	cfg.SetToken("file-token", "file-secret")
+	_ = cfg.SetToken("file-token", "file-secret")
 
 	// Should fall back to config file when keyring unavailable or token not in keyring
 	token, err := GetTokenWithFallback(cfg, "file-token")
@@ -108,7 +108,7 @@ func TestGetTokenWithFallback(t *testing.T) {
 
 func TestMigrateTokensToKeyring_NoKeyring(t *testing.T) {
 	cfg := NewConfig()
-	cfg.SetToken("test-token", "secret")
+	_ = cfg.SetToken("test-token", "secret")
 
 	// If keyring is not available, migration should fail gracefully
 	if !IsKeyringAvailable() {
