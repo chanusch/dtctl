@@ -122,11 +122,21 @@ func (h *Handler) List() ([]Lookup, error) {
 		if description, ok := record["description"].(string); ok {
 			lookup.Description = description
 		}
+		// Handle size field (can be float64 or string)
 		if size, ok := record["size"].(float64); ok {
 			lookup.FileSize = int64(size)
+		} else if sizeStr, ok := record["size"].(string); ok {
+			if size, err := parseIntFromString(sizeStr); err == nil {
+				lookup.FileSize = int64(size)
+			}
 		}
+		// Handle records field (can be float64 or string)
 		if records, ok := record["records"].(float64); ok {
 			lookup.Records = int(records)
+		} else if recordsStr, ok := record["records"].(string); ok {
+			if records, err := parseIntFromString(recordsStr); err == nil {
+				lookup.Records = records
+			}
 		}
 		if modified, ok := record["modified.timestamp"].(string); ok {
 			lookup.Modified = formatTimestamp(modified)
@@ -145,10 +155,57 @@ func (h *Handler) Get(path string) (*Lookup, error) {
 		return nil, err
 	}
 
+	executor := exec.NewDQLExecutor(h.client)
+
+	// First, get metadata from dt.system.files
+	metadataQuery := fmt.Sprintf(`fetch dt.system.files | filter name == "%s"`, path)
+	metadataResult, err := executor.ExecuteQuery(metadataQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lookup table metadata %q: %w", path, err)
+	}
+
+	metadataRecords := metadataResult.Records
+	if metadataResult.Result != nil {
+		metadataRecords = metadataResult.Result.Records
+	}
+
+	lookup := &Lookup{
+		Path: path,
+	}
+
+	// Extract metadata if available
+	if len(metadataRecords) > 0 {
+		record := metadataRecords[0]
+
+		if displayName, ok := record["display_name"].(string); ok {
+			lookup.DisplayName = displayName
+		}
+		if description, ok := record["description"].(string); ok {
+			lookup.Description = description
+		}
+		// Handle size field (can be float64 or string)
+		if size, ok := record["size"].(float64); ok {
+			lookup.FileSize = int64(size)
+		} else if sizeStr, ok := record["size"].(string); ok {
+			if size, err := parseIntFromString(sizeStr); err == nil {
+				lookup.FileSize = int64(size)
+			}
+		}
+		// Handle records field (can be float64 or string)
+		if records, ok := record["records"].(float64); ok {
+			lookup.Records = int(records)
+		} else if recordsStr, ok := record["records"].(string); ok {
+			if records, err := parseIntFromString(recordsStr); err == nil {
+				lookup.Records = records
+			}
+		}
+		if modified, ok := record["modified.timestamp"].(string); ok {
+			lookup.Modified = formatTimestamp(modified)
+		}
+	}
+
 	// Use DQL to load the lookup and get schema
 	query := fmt.Sprintf("load \"%s\" | limit 1", path)
-
-	executor := exec.NewDQLExecutor(h.client)
 	result, err := executor.ExecuteQuery(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lookup table %q: %w", path, err)
@@ -160,25 +217,10 @@ func (h *Handler) Get(path string) (*Lookup, error) {
 		records = result.Result.Records
 	}
 
-	lookup := &Lookup{
-		Path: path,
-	}
-
 	if len(records) > 0 {
 		// Extract column names
 		for col := range records[0] {
 			lookup.Columns = append(lookup.Columns, col)
-		}
-	}
-
-	// Get record count
-	countQuery := fmt.Sprintf("load \"%s\" | summarize count()", path)
-	countResult, err := executor.ExecuteQuery(countQuery)
-	if err == nil {
-		if countResult.Result != nil && len(countResult.Result.Records) > 0 {
-			if count, ok := countResult.Result.Records[0]["count()"].(float64); ok {
-				lookup.Records = int(count)
-			}
 		}
 	}
 
@@ -514,4 +556,11 @@ func formatTimestamp(ts string) string {
 	}
 
 	return t.Format("2006-01-02")
+}
+
+// parseIntFromString parses an integer from a string, returning an error if parsing fails
+func parseIntFromString(s string) (int, error) {
+	var val int
+	_, err := fmt.Sscanf(s, "%d", &val)
+	return val, err
 }

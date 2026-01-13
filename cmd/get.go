@@ -931,20 +931,29 @@ var getLookupsCmd = &cobra.Command{
 Lookup tables are tabular files stored in Grail that can be loaded and
 joined with observability data in DQL queries for data enrichment.
 
+Output formats:
+  - List view (no path): Shows lookup table metadata (path, size, records, etc.)
+  - Table output (-o table): Shows the actual lookup table data as a table
+  - YAML output (-o yaml): Shows both metadata and full data
+  - CSV/JSON output: Shows the lookup table data only
+
 Examples:
-  # List all lookup tables
+  # List all lookup tables (shows metadata)
   dtctl get lookups
 
-  # Get a specific lookup table with preview
+  # View lookup table data as a table (default)
   dtctl get lookup /lookups/grail/pm/error_codes
 
-  # Export lookup as CSV
+  # View with metadata included
+  dtctl get lookup /lookups/grail/pm/error_codes -o yaml
+
+  # Export lookup data as CSV
   dtctl get lookup /lookups/grail/pm/error_codes -o csv > error_codes.csv
 
-  # Export as JSON
+  # Export lookup data as JSON
   dtctl get lookup /lookups/grail/pm/error_codes -o json
 
-  # Output as wide table
+  # List all lookups with additional columns
   dtctl get lookups -o wide
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -963,10 +972,13 @@ Examples:
 
 		// Get specific lookup if path provided
 		if len(args) > 0 {
-			// Get lookup with preview data (first 10 rows)
-			lookupData, err := handler.GetWithData(args[0], 10)
-			if err != nil {
-				return err
+			// For table output, show the actual lookup table data (not metadata)
+			if outputFormat == "table" || outputFormat == "wide" {
+				data, err := handler.GetData(args[0], 0)
+				if err != nil {
+					return err
+				}
+				return printer.PrintList(data)
 			}
 
 			// For CSV/JSON output, return full data
@@ -978,6 +990,11 @@ Examples:
 				return printer.PrintList(fullData)
 			}
 
+			// For YAML output, return full structure (metadata + data)
+			lookupData, err := handler.GetWithData(args[0], 0)
+			if err != nil {
+				return err
+			}
 			return printer.Print(lookupData)
 		}
 

@@ -51,7 +51,7 @@ dtctl config set-credentials my-token --token "dt0s16.YOUR_TOKEN"
 # Go!
 dtctl get workflows
 dtctl query "fetch logs | limit 10"
-dtctl create lookup -f error_codes.csv --path /lookups/production/errors
+dtctl create lookup -f error_codes.csv --path /lookups/production/errors --lookup-field code
 ```
 
 ## What Can It Do?

@@ -754,10 +754,11 @@ dtctl create lookup -f lookup-manifest.yaml
 # Apply (create or update - idempotent)
 dtctl apply -f lookup-manifest.yaml
 
-# Update by re-uploading with --overwrite
+# Update by deleting and recreating
+dtctl delete lookup /lookups/grail/pm/error_codes -y
 dtctl create lookup -f updated_data.csv \
   --path /lookups/grail/pm/error_codes \
-  --overwrite
+  --lookup-field code
 
 # Delete
 dtctl delete lookup /lookups/grail/pm/error_codes # Requires confirmation
@@ -785,21 +786,23 @@ E004,Rate limit exceeded,low
 # Create from CSV (auto-detects structure)
 dtctl create lookup -f error_codes.csv \
   --path /lookups/grail/pm/error_codes \
+  --lookup-field code \
   --display-name "Error Codes" \
   --description "HTTP error code descriptions"
 
-# Update existing
+# Update existing (delete first)
+dtctl delete lookup /lookups/grail/pm/error_codes -y
 dtctl create lookup -f error_codes.csv \
   --path /lookups/grail/pm/error_codes \
-  --overwrite
+  --lookup-field code
 ```
 
 **Features**:
 - Auto-detect CSV headers and generate DPL parse patterns
-- Support custom parse patterns for non-CSV formats (pipe-delimited, fixed-width, etc.)
+- Support custom parse patterns for non-CSV formats (pipe-delimited, tab-delimited, etc.)
 - Multipart form upload to Grail Resource Store API
 - Path validation (must start with `/lookups/`, alphanumeric + `-_./ only`, max 500 chars)
-- Update via `--overwrite` flag or `apply` command
+- Update via delete and recreate workflow
 - Export to CSV/JSON for backup
 - List with metadata (path, size, records, modified timestamp)
 - Get with 10-row data preview

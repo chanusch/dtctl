@@ -991,7 +991,8 @@ The easiest way to create a lookup table is from a CSV file. dtctl automatically
 dtctl create lookup -f error_codes.csv \
   --path /lookups/production/error_codes \
   --display-name "Error Code Mappings" \
-  --description "Maps error codes to descriptions and severity"
+  --description "Maps error codes to descriptions and severity" \
+  --lookup-field code
 
 # Output:
 # ✓ Created lookup table: /lookups/production/error_codes
@@ -1019,17 +1020,15 @@ For non-CSV formats or custom delimiters, specify a parse pattern:
 dtctl create lookup -f data.txt \
   --path /lookups/custom/pipe_data \
   --parse-pattern "LD:id '|' LD:name '|' LD:value" \
+  --lookup-field id \
   --skip-records 1
 
 # Tab-delimited file
 dtctl create lookup -f data.tsv \
   --path /lookups/custom/tab_data \
-  --parse-pattern "LD:col1 '\t' LD:col2 '\t' LD:col3"
-
-# Fixed-width format
-dtctl create lookup -f data.txt \
-  --path /lookups/custom/fixed \
-  --parse-pattern "LD:id:5 LD:name:20 LD:value:10"
+  --parse-pattern "LD:col1 '\t' LD:col2 '\t' LD:col3" \
+  --lookup-field col1 \
+  --skip-records 1
 ```
 
 **Parse Pattern Syntax:**
@@ -1037,20 +1036,19 @@ dtctl create lookup -f data.txt \
 - `','` - Comma separator (single quotes required)
 - `'\t'` - Tab separator
 - `'|'` - Pipe separator
-- `LD:columnName:width` - Fixed-width column
 
 ### Update Lookup Tables
 
-Update an existing lookup table with new data:
+To update an existing lookup table, you need to delete it first and then recreate it:
 
 ```bash
-# Update with --overwrite flag
+# Delete the existing lookup table
+dtctl delete lookup /lookups/production/error_codes -y
+
+# Create with new data
 dtctl create lookup -f updated_codes.csv \
   --path /lookups/production/error_codes \
-  --overwrite
-
-# Or use apply (automatically overwrites if exists)
-dtctl apply -f error_codes.yaml
+  --lookup-field code
 ```
 
 **Note:** Updates completely replace the existing lookup table data.
@@ -1112,7 +1110,8 @@ EOF
 # Upload to Dynatrace
 dtctl create lookup -f error_codes.csv \
   --path /lookups/monitoring/error_codes \
-  --display-name "Application Error Codes"
+  --display-name "Application Error Codes" \
+  --lookup-field code
 
 # Use in query
 dtctl query "
@@ -1142,7 +1141,8 @@ EOF
 # Upload
 dtctl create lookup -f ip_locations.csv \
   --path /lookups/infrastructure/ip_locations \
-  --display-name "IP to Location Mapping"
+  --display-name "IP to Location Mapping" \
+  --lookup-field ip_address
 
 # Use in query to geo-locate traffic
 dtctl query "
@@ -1172,7 +1172,8 @@ EOF
 # Upload
 dtctl create lookup -f service_owners.csv \
   --path /lookups/services/ownership \
-  --display-name "Service Ownership"
+  --display-name "Service Ownership" \
+  --lookup-field service_id
 
 # Find errors by team
 dtctl query "
@@ -1203,7 +1204,8 @@ EOF
 # Upload
 dtctl create lookup -f country_codes.csv \
   --path /lookups/reference/countries \
-  --display-name "Country Reference Data"
+  --display-name "Country Reference Data" \
+  --lookup-field code
 
 # Enrich user analytics
 dtctl query "
@@ -1263,7 +1265,8 @@ Lookup table paths must follow these rules:
 dtctl create lookup -f data.csv \
   --path /lookups/prod/error_codes \
   --display-name "Production Error Code Mappings" \
-  --description "Maps application error codes to user-friendly messages and severity levels. Updated weekly."
+  --description "Maps application error codes to user-friendly messages and severity levels. Updated weekly." \
+  --lookup-field code
 ```
 
 **3. Export for backup:**
@@ -1281,25 +1284,28 @@ dtctl get lookups -o csv > lookup_inventory.csv
 git add lookups/error_codes.csv
 git commit -m "Update error code E005 description"
 
-# Apply from repository
+# Apply from repository (delete first if it exists)
+dtctl delete lookup /lookups/production/error_codes -y 2>/dev/null || true
 dtctl create lookup -f lookups/error_codes.csv \
   --path /lookups/production/error_codes \
-  --overwrite
+  --lookup-field code
 ```
 
 **5. Test before production:**
 ```bash
 # Upload to staging first
 dtctl create lookup -f new_data.csv \
-  --path /lookups/staging/test_lookup
+  --path /lookups/staging/test_lookup \
+  --lookup-field id
 
 # Test with queries
 dtctl query "fetch logs | lookup [load '/lookups/staging/test_lookup'], sourceField:id, lookupField:key"
 
-# Promote to production
+# Promote to production (delete first if exists)
+dtctl delete lookup /lookups/production/live_lookup -y 2>/dev/null || true
 dtctl create lookup -f new_data.csv \
   --path /lookups/production/live_lookup \
-  --overwrite
+  --lookup-field id
 ```
 
 ### Required Token Scopes

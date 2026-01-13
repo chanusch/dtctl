@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -167,6 +168,11 @@ func (p *TablePrinter) PrintList(obj interface{}) error {
 		first = first.Elem()
 	}
 
+	// Handle slice of maps (e.g., from DQL results or lookup tables)
+	if first.Kind() == reflect.Map || (first.Kind() == reflect.Interface && first.Elem().Kind() == reflect.Map) {
+		return p.printMaps(v, table)
+	}
+
 	if first.Kind() != reflect.Struct {
 		// For non-struct elements, print a simple list
 		for i := 0; i < v.Len(); i++ {
@@ -241,5 +247,103 @@ func formatValue(v reflect.Value) string {
 		return "false"
 	default:
 		return fmt.Sprintf("%v", v.Interface())
+	}
+}
+
+// printMaps prints a slice of maps as a table
+func (p *TablePrinter) printMaps(v reflect.Value, table *tablewriter.Table) error {
+	// Collect all unique keys from all maps to create headers
+	keySet := make(map[string]bool)
+	var rows []map[string]interface{}
+
+	for i := 0; i < v.Len(); i++ {
+		elem := v.Index(i)
+
+		// Handle interface{} wrapping a map
+		if elem.Kind() == reflect.Interface {
+			elem = elem.Elem()
+		}
+
+		if elem.Kind() != reflect.Map {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		iter := elem.MapRange()
+		for iter.Next() {
+			key := fmt.Sprintf("%v", iter.Key().Interface())
+			keySet[key] = true
+			row[key] = iter.Value().Interface()
+		}
+		rows = append(rows, row)
+	}
+
+	// Sort keys for consistent column order
+	var keys []string
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Convert keys to uppercase for headers (kubectl style)
+	var headers []string
+	for _, k := range keys {
+		headers = append(headers, strings.ToUpper(k))
+	}
+	table.SetHeader(headers)
+
+	// Add rows
+	for _, row := range rows {
+		var values []string
+		for _, key := range keys {
+			val := row[key]
+			values = append(values, formatTableMapValue(val))
+		}
+		table.Append(values)
+	}
+
+	table.Render()
+	return nil
+}
+
+// formatTableMapValue formats a value from a map for table display
+func formatTableMapValue(val interface{}) string {
+	if val == nil {
+		return ""
+	}
+
+	v := reflect.ValueOf(val)
+
+	// Handle pointers
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return ""
+		}
+		return formatTableMapValue(v.Elem().Interface())
+	}
+
+	// Handle maps and slices
+	switch v.Kind() {
+	case reflect.Map:
+		if v.IsNil() || v.Len() == 0 {
+			return ""
+		}
+		return fmt.Sprintf("<%d items>", v.Len())
+	case reflect.Slice:
+		if v.IsNil() || v.Len() == 0 {
+			return ""
+		}
+		// For slices, try to display items if they're simple types
+		if v.Len() <= 3 {
+			var items []string
+			for i := 0; i < v.Len(); i++ {
+				item := v.Index(i).Interface()
+				items = append(items, fmt.Sprintf("%v", item))
+			}
+			return strings.Join(items, ", ")
+		}
+		return fmt.Sprintf("<%d items>", v.Len())
+	default:
+		return fmt.Sprintf("%v", val)
 	}
 }

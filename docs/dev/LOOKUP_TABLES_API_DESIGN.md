@@ -153,7 +153,7 @@ dtctl create lookup -f data.txt \
   --skip-records 1
 
 # Prevent overwrite (default behavior)
-dtctl create lookup -f data.csv --path /lookups/test
+dtctl create lookup -f data.csv --path /lookups/test --lookup-field id
 ```
 
 **Manifest Example** (`lookup-manifest.yaml`):
