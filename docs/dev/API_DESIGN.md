@@ -714,7 +714,102 @@ Feature flags enable progressive rollouts, A/B testing, and controlled feature r
 - Context-based configuration
 - Change request workflows
 
-### 17. Email (Templates)
+### 17. Lookup Tables (Grail Resource Store)
+**API Spec**: `grail-resource-store.yaml`
+
+Lookup tables are tabular files stored in Grail Resource Store that can be loaded and joined with observability data in DQL queries for data enrichment.
+
+```bash
+# Resource name: lookup/lookups (short: lkup, lu)
+
+# List lookup tables
+dtctl get lookups                                # List all lookup tables
+dtctl get lookups -o wide                        # Show additional columns
+
+# Get lookup table with data preview
+dtctl get lookup /lookups/grail/pm/error_codes   # Show metadata + preview
+dtctl get lookup /lookups/grail/pm/error_codes -o csv > data.csv  # Export as CSV
+dtctl get lookup /lookups/grail/pm/error_codes -o json # Export as JSON
+
+# Describe lookup table (metadata only)
+dtctl describe lookup /lookups/grail/pm/error_codes
+
+# Create lookup table from CSV (auto-detect headers)
+dtctl create lookup -f error_codes.csv \
+  --path /lookups/grail/pm/error_codes \
+  --lookup-field code \
+  --display-name "Error Codes" \
+  --description "HTTP error code descriptions"
+
+# Create with custom parse pattern (non-CSV formats)
+dtctl create lookup -f data.txt \
+  --path /lookups/custom/data \
+  --lookup-field id \
+  --parse-pattern "LD:id '|' LD:value '|' LD:timestamp" \
+  --skip-records 1
+
+# Create from manifest (YAML)
+dtctl create lookup -f lookup-manifest.yaml
+
+# Apply (create or update - idempotent)
+dtctl apply -f lookup-manifest.yaml
+dtctl apply -f error_codes.csv --path /lookups/grail/pm/error_codes
+
+# Edit interactively
+dtctl edit lookup /lookups/grail/pm/error_codes   # Opens in $EDITOR (CSV format)
+
+# Delete
+dtctl delete lookup /lookups/grail/pm/error_codes # Requires confirmation
+dtctl delete lookup /lookups/grail/pm/error_codes -y # Skip confirmation
+
+# Use in DQL queries
+dtctl query "
+  fetch logs
+  | lookup [load '/lookups/grail/pm/error_codes'], lookupField:status_code
+  | fields timestamp, status_code, message, severity
+"
+```
+
+**Manifest Example** (`lookup-manifest.yaml`):
+```yaml
+apiVersion: grail/v1
+kind: Lookup
+metadata:
+  path: /lookups/grail/pm/error_codes
+  displayName: Error Codes
+  description: HTTP error code descriptions
+spec:
+  lookupField: code
+  parsePattern: "LD:code ',' LD:message ',' LD:severity"  # Auto-detected for CSV
+  skippedRecords: 1  # Skip header row
+  autoFlatten: true
+  timezone: UTC
+  locale: en_US
+  overwrite: false
+data:
+  source: error_codes.csv  # Path to data file
+```
+
+**Features**:
+- Auto-detect CSV headers and generate DPL parse patterns
+- Support custom parse patterns for non-CSV formats (pipe-delimited, fixed-width, etc.)
+- Multipart form upload to Grail Resource Store API
+- Path validation (must start with `/lookups/`)
+- Interactive edit with CSV format
+- Export to CSV/JSON for backup
+
+**API Endpoints**:
+- `POST /platform/storage/resource-store/v1/files/tabular/lookup:upload` - Upload
+- `POST /platform/storage/resource-store/v1/files:delete` - Delete
+- `fetch dt.system.files | filter path starts_with "/lookups/"` - List (via DQL)
+- `load "<path>"` - Load data (via DQL)
+
+**Required Scopes**:
+- Read operations: `storage:files:read`
+- Write operations: `storage:files:write`
+- Delete operations: `storage:files:delete`
+
+### 18. Email (Templates)
 **API Spec**: `email.yaml`
 
 ```bash
@@ -723,7 +818,7 @@ Feature flags enable progressive rollouts, A/B testing, and controlled feature r
 # dtctl send email --template <id> --to user@ex.com # Send email
 ```
 
-### 18. State Management
+### 19. State Management
 **API Spec**: `state-management.yaml`
 
 ```bash
