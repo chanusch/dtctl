@@ -14,13 +14,14 @@ This guide provides practical examples for using dtctl to manage your Dynatrace 
 6. [Settings](#settings)
 7. [Notifications](#notifications)
 8. [Grail Buckets](#grail-buckets)
-9. [OpenPipeline](#openpipeline)
-10. [App Engine](#app-engine)
-11. [EdgeConnect](#edgeconnect)
-12. [Davis AI](#davis-ai)
-13. [Output Formats](#output-formats)
-14. [Tips & Tricks](#tips--tricks)
-15. [Troubleshooting](#troubleshooting)
+9. [Lookup Tables](#lookup-tables)
+10. [OpenPipeline](#openpipeline)
+11. [App Engine](#app-engine)
+12. [EdgeConnect](#edgeconnect)
+13. [Davis AI](#davis-ai)
+14. [Output Formats](#output-formats)
+15. [Tips & Tricks](#tips--tricks)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -62,6 +63,7 @@ For detailed instructions, see [Dynatrace Platform Tokens documentation](https:/
 - **SLOs**: `slo:read`, `slo:write`
 - **Settings**: `settings:objects:read`, `settings:objects:write`, `settings:schemas:read`
 - **Grail Buckets**: `storage:buckets:read`, `storage:buckets:write`
+- **Lookup Tables**: `storage:files:read`, `storage:files:write`, `storage:files:delete`
 - **OpenPipeline**: `openpipeline:configurations:read`, `openpipeline:configurations:write`
 - **Davis Analyzers**: `davis:analyzers:read`, `davis:analyzers:execute`
 - **Davis CoPilot**: `davis-copilot:conversations:execute`
@@ -963,6 +965,352 @@ dtctl delete bucket logs-staging -y
 
 ---
 
+## Lookup Tables
+
+Lookup tables enable data enrichment in DQL queries by mapping key values to additional information. They're stored in Grail and can be referenced in queries to add context like mapping error codes to descriptions, IPs to locations, or IDs to human-readable names.
+
+### List and View Lookup Tables
+
+```bash
+# List all lookup tables
+dtctl get lookups
+
+# Get a specific lookup (shows metadata + 10 row preview)
+dtctl get lookup /lookups/production/error_codes
+
+# View detailed information
+dtctl describe lookup /lookups/production/error_codes
+```
+
+### Create Lookup Tables from CSV
+
+The easiest way to create a lookup table is from a CSV file. dtctl automatically detects the CSV structure:
+
+```bash
+# Create from CSV (auto-detects headers and format)
+dtctl create lookup -f error_codes.csv \
+  --path /lookups/production/error_codes \
+  --display-name "Error Code Mappings" \
+  --description "Maps error codes to descriptions and severity"
+
+# Output:
+# ✓ Created lookup table: /lookups/production/error_codes
+#   Records: 150
+#   File Size: 12,458 bytes
+#   Discarded Duplicates: 0
+```
+
+**Example CSV file** (`error_codes.csv`):
+
+```csv
+code,message,severity
+E001,Connection timeout,high
+E002,Invalid credentials,critical
+E003,Resource not found,medium
+E004,Rate limit exceeded,low
+```
+
+### Create with Custom Parse Patterns
+
+For non-CSV formats or custom delimiters, specify a parse pattern:
+
+```bash
+# Pipe-delimited file
+dtctl create lookup -f data.txt \
+  --path /lookups/custom/pipe_data \
+  --parse-pattern "LD:id '|' LD:name '|' LD:value" \
+  --skip-records 1
+
+# Tab-delimited file
+dtctl create lookup -f data.tsv \
+  --path /lookups/custom/tab_data \
+  --parse-pattern "LD:col1 '\t' LD:col2 '\t' LD:col3"
+
+# Fixed-width format
+dtctl create lookup -f data.txt \
+  --path /lookups/custom/fixed \
+  --parse-pattern "LD:id:5 LD:name:20 LD:value:10"
+```
+
+**Parse Pattern Syntax:**
+- `LD:columnName` - Define a column
+- `','` - Comma separator (single quotes required)
+- `'\t'` - Tab separator
+- `'|'` - Pipe separator
+- `LD:columnName:width` - Fixed-width column
+
+### Update Lookup Tables
+
+Update an existing lookup table with new data:
+
+```bash
+# Update with --overwrite flag
+dtctl create lookup -f updated_codes.csv \
+  --path /lookups/production/error_codes \
+  --overwrite
+
+# Or use apply (automatically overwrites if exists)
+dtctl apply -f error_codes.yaml
+```
+
+**Note:** Updates completely replace the existing lookup table data.
+
+### Using Lookup Tables in DQL Queries
+
+Once created, use lookup tables to enrich your query results:
+
+```bash
+# Simple lookup join
+dtctl query "
+fetch logs
+| filter status = 'ERROR'
+| lookup [
+    fetch dt.system.files
+    | load '/lookups/production/error_codes'
+  ], sourceField:error_code, lookupField:code
+| fields timestamp, error_code, message, severity
+| limit 100
+"
+
+# Enrich host data with location info
+dtctl query "
+fetch dt.entity.host
+| lookup [
+    load '/lookups/infrastructure/host_locations'
+  ], sourceField:host.name, lookupField:hostname
+| fields host.name, datacenter, region, cost_center
+"
+
+# Map user IDs to names
+dtctl query "
+fetch logs
+| filter log.source = 'api'
+| lookup [
+    load '/lookups/users/directory'
+  ], sourceField:user_id, lookupField:id, fields:{name, email, department}
+| summarize count(), by:{name, department}
+"
+```
+
+### Practical Examples
+
+#### Error Code Enrichment
+
+Create a lookup table for error codes:
+
+```bash
+# Create error_codes.csv
+cat > error_codes.csv <<EOF
+code,message,severity,documentation_url
+E001,Connection timeout,high,https://docs.example.com/errors/e001
+E002,Invalid credentials,critical,https://docs.example.com/errors/e002
+E003,Resource not found,medium,https://docs.example.com/errors/e003
+E004,Rate limit exceeded,low,https://docs.example.com/errors/e004
+E005,Internal server error,critical,https://docs.example.com/errors/e005
+EOF
+
+# Upload to Dynatrace
+dtctl create lookup -f error_codes.csv \
+  --path /lookups/monitoring/error_codes \
+  --display-name "Application Error Codes"
+
+# Use in query
+dtctl query "
+fetch logs
+| filter status = 'ERROR'
+| lookup [load '/lookups/monitoring/error_codes'], 
+  sourceField:error_code, lookupField:code
+| fields timestamp, error_code, message, severity, documentation_url
+| limit 50
+"
+```
+
+#### IP to Location Mapping
+
+Map IP addresses to geographic locations:
+
+```bash
+# Create ip_locations.csv
+cat > ip_locations.csv <<EOF
+ip_address,city,country,datacenter
+10.0.1.50,New York,USA,DC-US-EAST-1
+10.0.2.50,London,UK,DC-EU-WEST-1
+10.0.3.50,Singapore,SG,DC-APAC-1
+192.168.1.100,Frankfurt,Germany,DC-EU-CENTRAL-1
+EOF
+
+# Upload
+dtctl create lookup -f ip_locations.csv \
+  --path /lookups/infrastructure/ip_locations \
+  --display-name "IP to Location Mapping"
+
+# Use in query to geo-locate traffic
+dtctl query "
+fetch logs
+| filter log.source = 'nginx'
+| lookup [load '/lookups/infrastructure/ip_locations'], 
+  sourceField:client_ip, lookupField:ip_address
+| summarize request_count=count(), by:{city, country, datacenter}
+| sort request_count desc
+"
+```
+
+#### Service ID to Team Mapping
+
+Map service identifiers to team ownership:
+
+```bash
+# Create service_owners.csv
+cat > service_owners.csv <<EOF
+service_id,service_name,team,team_email,slack_channel
+svc-001,payment-api,Payments,payments@example.com,#team-payments
+svc-002,user-service,Identity,identity@example.com,#team-identity
+svc-003,order-processor,Fulfillment,fulfillment@example.com,#team-fulfillment
+svc-004,notification-service,Platform,platform@example.com,#team-platform
+EOF
+
+# Upload
+dtctl create lookup -f service_owners.csv \
+  --path /lookups/services/ownership \
+  --display-name "Service Ownership"
+
+# Find errors by team
+dtctl query "
+fetch logs
+| filter status = 'ERROR'
+| lookup [load '/lookups/services/ownership'], 
+  sourceField:service, lookupField:service_id
+| summarize error_count=count(), by:{team, team_email, slack_channel}
+| sort error_count desc
+"
+```
+
+#### Country Code Enrichment
+
+```bash
+# Create country_codes.csv
+cat > country_codes.csv <<EOF
+code,name,continent,currency
+US,United States,North America,USD
+GB,United Kingdom,Europe,GBP
+DE,Germany,Europe,EUR
+JP,Japan,Asia,JPY
+AU,Australia,Oceania,AUD
+BR,Brazil,South America,BRL
+IN,India,Asia,INR
+EOF
+
+# Upload
+dtctl create lookup -f country_codes.csv \
+  --path /lookups/reference/countries \
+  --display-name "Country Reference Data"
+
+# Enrich user analytics
+dtctl query "
+fetch logs
+| filter log.source = 'analytics'
+| lookup [load '/lookups/reference/countries'], 
+  sourceField:country_code, lookupField:code, 
+  fields:{name, continent, currency}
+| summarize users=countDistinct(user_id), by:{name, continent}
+| sort users desc
+"
+```
+
+### Delete Lookup Tables
+
+```bash
+# Delete a lookup table
+dtctl delete lookup /lookups/production/old_data
+
+# Skip confirmation
+dtctl delete lookup /lookups/staging/test_data -y
+```
+
+### Path Requirements
+
+Lookup table paths must follow these rules:
+- Must start with `/lookups/`
+- Only alphanumeric characters, hyphens (`-`), underscores (`_`), dots (`.`), and slashes (`/`)
+- Must end with an alphanumeric character
+- Maximum 500 characters
+- At least 2 slashes (e.g., `/lookups/category/name`)
+
+**Good paths:**
+- `/lookups/production/error_codes`
+- `/lookups/infrastructure/host-locations`
+- `/lookups/reference/country.codes`
+
+**Invalid paths:**
+- `/data/lookup` - Must start with `/lookups/`
+- `/lookups/test/` - Cannot end with slash
+- `/lookups/data@prod` - Invalid character `@`
+- `/lookups/name` - Must have at least 2 slashes
+
+### Tips & Best Practices
+
+**1. Organize with meaningful paths:**
+```bash
+/lookups/production/...      # Production data
+/lookups/staging/...         # Staging/test data
+/lookups/reference/...       # Static reference data
+/lookups/infrastructure/...  # Infrastructure mappings
+/lookups/applications/...    # Application-specific data
+```
+
+**2. Use descriptive display names and descriptions:**
+```bash
+dtctl create lookup -f data.csv \
+  --path /lookups/prod/error_codes \
+  --display-name "Production Error Code Mappings" \
+  --description "Maps application error codes to user-friendly messages and severity levels. Updated weekly."
+```
+
+**3. Export for backup:**
+```bash
+# Export lookup metadata and data
+dtctl get lookup /lookups/production/error_codes -o yaml > backup.yaml
+
+# List all lookups for documentation
+dtctl get lookups -o csv > lookup_inventory.csv
+```
+
+**4. Version your source CSV files:**
+```bash
+# Keep CSV files in version control
+git add lookups/error_codes.csv
+git commit -m "Update error code E005 description"
+
+# Apply from repository
+dtctl create lookup -f lookups/error_codes.csv \
+  --path /lookups/production/error_codes \
+  --overwrite
+```
+
+**5. Test before production:**
+```bash
+# Upload to staging first
+dtctl create lookup -f new_data.csv \
+  --path /lookups/staging/test_lookup
+
+# Test with queries
+dtctl query "fetch logs | lookup [load '/lookups/staging/test_lookup'], sourceField:id, lookupField:key"
+
+# Promote to production
+dtctl create lookup -f new_data.csv \
+  --path /lookups/production/live_lookup \
+  --overwrite
+```
+
+### Required Token Scopes
+
+For lookup table management, your platform token needs:
+- **List/View**: `storage:files:read`
+- **Create/Update**: `storage:files:write`
+- **Delete**: `storage:files:delete`
+
+---
+
 ## OpenPipeline
 
 OpenPipeline processes and routes observability data.
@@ -1637,6 +1985,7 @@ For the core features, your platform token needs:
 - **SLOs**: `slo:read`, `slo:write`
 - **Settings**: `settings:objects:read`, `settings:objects:write`, `settings:schemas:read`
 - **Grail Buckets**: `storage:buckets:read`, `storage:buckets:write`
+- **Lookup Tables**: `storage:files:read`, `storage:files:write`, `storage:files:delete`
 - **OpenPipeline**: `openpipeline:configurations:read`, `openpipeline:configurations:write`
 - **Davis Analyzers**: `davis:analyzers:read`, `davis:analyzers:execute`
 - **Davis CoPilot**: `davis-copilot:conversations:execute`

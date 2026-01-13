@@ -753,10 +753,11 @@ dtctl create lookup -f lookup-manifest.yaml
 
 # Apply (create or update - idempotent)
 dtctl apply -f lookup-manifest.yaml
-dtctl apply -f error_codes.csv --path /lookups/grail/pm/error_codes
 
-# Edit interactively
-dtctl edit lookup /lookups/grail/pm/error_codes   # Opens in $EDITOR (CSV format)
+# Update by re-uploading with --overwrite
+dtctl create lookup -f updated_data.csv \
+  --path /lookups/grail/pm/error_codes \
+  --overwrite
 
 # Delete
 dtctl delete lookup /lookups/grail/pm/error_codes # Requires confirmation
@@ -770,33 +771,38 @@ dtctl query "
 "
 ```
 
-**Manifest Example** (`lookup-manifest.yaml`):
-```yaml
-apiVersion: grail/v1
-kind: Lookup
-metadata:
-  path: /lookups/grail/pm/error_codes
-  displayName: Error Codes
-  description: HTTP error code descriptions
-spec:
-  lookupField: code
-  parsePattern: "LD:code ',' LD:message ',' LD:severity"  # Auto-detected for CSV
-  skippedRecords: 1  # Skip header row
-  autoFlatten: true
-  timezone: UTC
-  locale: en_US
-  overwrite: false
-data:
-  source: error_codes.csv  # Path to data file
+**CSV Data File Example** (`error_codes.csv`):
+```csv
+code,message,severity
+E001,Connection timeout,high
+E002,Invalid credentials,critical
+E003,Resource not found,medium
+E004,Rate limit exceeded,low
+```
+
+**Usage with CSV**:
+```bash
+# Create from CSV (auto-detects structure)
+dtctl create lookup -f error_codes.csv \
+  --path /lookups/grail/pm/error_codes \
+  --display-name "Error Codes" \
+  --description "HTTP error code descriptions"
+
+# Update existing
+dtctl create lookup -f error_codes.csv \
+  --path /lookups/grail/pm/error_codes \
+  --overwrite
 ```
 
 **Features**:
 - Auto-detect CSV headers and generate DPL parse patterns
 - Support custom parse patterns for non-CSV formats (pipe-delimited, fixed-width, etc.)
 - Multipart form upload to Grail Resource Store API
-- Path validation (must start with `/lookups/`)
-- Interactive edit with CSV format
+- Path validation (must start with `/lookups/`, alphanumeric + `-_./ only`, max 500 chars)
+- Update via `--overwrite` flag or `apply` command
 - Export to CSV/JSON for backup
+- List with metadata (path, size, records, modified timestamp)
+- Get with 10-row data preview
 
 **API Endpoints**:
 - `POST /platform/storage/resource-store/v1/files/tabular/lookup:upload` - Upload
