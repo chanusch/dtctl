@@ -2,8 +2,6 @@ package client
 
 import (
 	"fmt"
-
-	"github.com/cockroachdb/errors"
 )
 
 // Error codes matching the CLI error handling spec
@@ -56,5 +54,5 @@ func NewAPIError(statusCode int, message, details string) error {
 
 // WrapError wraps an error with additional context
 func WrapError(err error, message string) error {
-	return errors.Wrap(err, message)
+	return fmt.Errorf("%s: %w", message, err)
 }
