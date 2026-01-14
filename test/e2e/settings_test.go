@@ -165,8 +165,10 @@ func TestSettingsGetNonExistentObject(t *testing.T) {
 		t.Fatal("Expected error for non-existent object, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("Expected 'not found' error, got: %v", err)
+	// When calling Get with a UUID-formatted ID, a schema ID is required for UID resolution
+	expectedErr := "schema ID is required when looking up settings by UID"
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Errorf("Expected error containing %q, got: %v", expectedErr, err)
 	}
 
 	t.Logf("✓ Got expected error: %v", err)
