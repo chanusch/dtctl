@@ -11,17 +11,16 @@ This guide provides practical examples for using dtctl to manage your Dynatrace 
 3. [Dashboards & Notebooks](#dashboards--notebooks)
 4. [DQL Queries](#dql-queries)
 5. [Service Level Objectives (SLOs)](#service-level-objectives-slos)
-6. [Settings](#settings)
-7. [Notifications](#notifications)
-8. [Grail Buckets](#grail-buckets)
-9. [Lookup Tables](#lookup-tables)
-10. [OpenPipeline](#openpipeline)
-11. [App Engine](#app-engine)
-12. [EdgeConnect](#edgeconnect)
-13. [Davis AI](#davis-ai)
-14. [Output Formats](#output-formats)
-15. [Tips & Tricks](#tips--tricks)
-16. [Troubleshooting](#troubleshooting)
+6. [Notifications](#notifications)
+7. [Grail Buckets](#grail-buckets)
+8. [Lookup Tables](#lookup-tables)
+9. [OpenPipeline](#openpipeline)
+10. [App Engine](#app-engine)
+11. [EdgeConnect](#edgeconnect)
+12. [Davis AI](#davis-ai)
+13. [Output Formats](#output-formats)
+14. [Tips & Tricks](#tips--tricks)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -61,7 +60,6 @@ For detailed instructions, see [Dynatrace Platform Tokens documentation](https:/
 - **Documents** (dashboards/notebooks): `document:documents:read`, `document:documents:write`
 - **DQL Queries**: `storage:logs:read`, `storage:events:read`, `storage:metrics:read`, `storage:buckets:read`
 - **SLOs**: `slo:read`, `slo:write`
-- **Settings**: `settings:objects:read`, `settings:objects:write`, `settings:schemas:read`
 - **Grail Buckets**: `storage:buckets:read`, `storage:buckets:write`
 - **Lookup Tables**: `storage:files:read`, `storage:files:write`, `storage:files:delete`
 - **OpenPipeline**: `openpipeline:configurations:read`, `openpipeline:configurations:write`
@@ -810,79 +808,6 @@ dtctl delete slo slo-123
 
 # Skip confirmation
 dtctl delete slo slo-123 -y
-```
-
----
-
-## Settings
-
-Settings control various Dynatrace platform configurations.
-
-### List Settings Schemas
-
-Settings are organized by schemas:
-
-```bash
-# List all available settings schemas
-dtctl get settings-schemas
-
-# Get a specific schema definition
-dtctl get settings-schema builtin:health-experience.cloud-alert
-
-# View schema details with validation rules
-dtctl describe settings-schema builtin:health-experience.cloud-alert
-```
-
-### List and View Settings
-
-```bash
-# List settings for a specific schema
-dtctl get settings --schema builtin:alerting.profile
-
-# Filter by scope
-dtctl get settings \
-  --schema builtin:anomaly-detection.infrastructure \
-  --scope environment
-
-# Get a specific settings object
-dtctl get settings object-789
-
-# Detailed view
-dtctl describe settings object-789
-```
-
-### Create and Apply Settings
-
-```bash
-# Create settings from file
-dtctl create settings \
-  -f alerting-profile.yaml \
-  --schema builtin:alerting.profile \
-  --scope environment
-
-# Apply (create or update)
-dtctl apply -f alerting-profile.yaml
-```
-
-**Example settings file** (`alerting-profile.yaml`):
-
-```yaml
-schemaId: builtin:alerting.profile
-scope: environment
-value:
-  name: "Production Alerts"
-  rules:
-    - severityLevel: ERROR
-      enabled: true
-    - severityLevel: WARNING
-      enabled: false
-```
-
-### Delete Settings
-
-```bash
-# Delete a settings object
-dtctl delete settings object-789
 ```
 
 ---
@@ -1989,7 +1914,6 @@ For the core features, your platform token needs:
 - **Documents** (dashboards/notebooks): `document:documents:read`, `document:documents:write`
 - **DQL Queries**: `storage:logs:read`, `storage:events:read`, `storage:metrics:read`, `storage:buckets:read`
 - **SLOs**: `slo:read`, `slo:write`
-- **Settings**: `settings:objects:read`, `settings:objects:write`, `settings:schemas:read`
 - **Grail Buckets**: `storage:buckets:read`, `storage:buckets:write`
 - **Lookup Tables**: `storage:files:read`, `storage:files:write`, `storage:files:delete`
 - **OpenPipeline**: `openpipeline:configurations:read`, `openpipeline:configurations:write`

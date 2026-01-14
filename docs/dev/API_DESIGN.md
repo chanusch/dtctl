@@ -418,27 +418,7 @@ dtctl apply -f bucket.yaml                       # Create or update bucket
 # dtctl get bucket-usage                           # Storage usage info
 ```
 
-### 8. Settings
-**API Spec**: `settings.yaml`
-
-```bash
-# Settings Schemas
-dtctl get settings-schemas                       # List all settings schemas
-dtctl get settings-schema <schema-id>            # Get schema definition
-
-# Settings Objects
-dtctl get settings --schema <schema-id>          # List settings for schema
-dtctl get settings --schema <schema-id> --scope environment  # Filter by scope
-dtctl get settings <object-id>                   # Get specific settings object
-dtctl create settings -f value.yaml --schema <schema-id> --scope environment
-dtctl delete settings <object-id>                # Delete settings object
-dtctl apply -f settings.yaml                     # Apply settings (create or update)
-
-# (not implemented yet)
-# dtctl validate setting -f setting.yaml           # Validate without applying
-```
-
-### 9. Notifications
+### 8. Notifications
 **API Specs**: `notification-v2.yaml`
 
 ```bash
@@ -616,105 +596,7 @@ dtctl exec copilot document-search "performance" --exclude doc-123,doc-456
 # dtctl get certificates                           # List certificates
 ```
 
-### 16. Feature Flags
-**API Spec**: `feature-flags.yaml`
-**Detailed Design**: [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md)
-
-Feature flags enable progressive rollouts, A/B testing, and controlled feature releases. The API is organized around **Projects** (containers), **Stages** (environments), **Feature Flag Definitions**, and **Stage Definitions** (stage-specific configs).
-
-```bash
-# All feature flags commands (not implemented yet)
-
-# Projects - containers for feature flags
-# Resource name: project/projects (short: proj)
-# dtctl get projects                               # List projects
-# dtctl describe project my-app                    # Project details with stages
-# dtctl create project my-app --name "My Application"
-# dtctl delete project my-app
-
-# Link/unlink stages to projects
-# dtctl link stage production --project my-app     # Link stage to project
-# dtctl unlink stage dev --project my-app          # Unlink stage
-
-# Stages - deployment environments
-# Resource name: stage/stages (short: stg)
-# dtctl get stages                                 # List all stages
-# dtctl get stages --project my-app                # Stages linked to project
-# dtctl create stage production --name "Production"
-# dtctl delete stage old-stage                     # Only if not linked
-
-# Feature Flags - flag definitions
-# Resource name: feature-flag/feature-flags (short: ff, flag)
-# dtctl get ff --project my-app                    # List flags in project
-# dtctl describe ff new-checkout --project my-app  # Flag details
-# dtctl create ff new-feature --project my-app \
-#   --type BOOLEAN \
-#   --variants '{"on":true,"off":false}'
-# dtctl edit ff new-feature --project my-app       # Edit in $EDITOR
-# dtctl delete ff old-feature --project my-app
-
-# Feature Flag Stage Definitions - stage-specific configs
-# Resource name: feature-flag-stage/feature-flag-stages (short: ffs)
-# dtctl get ffs --project my-app --stage production
-# dtctl describe ffs new-checkout --project my-app --stage prod
-# dtctl patch ffs new-checkout \
-#   --project my-app \
-#   --stage production \
-#   --enabled=true                                 # Enable flag
-# dtctl patch ffs new-checkout \
-#   --project my-app \
-#   --stage production \
-#   --default-variant=on                           # Set default
-# dtctl edit ffs new-checkout --project my-app --stage prod
-# dtctl delete ffs new-checkout --project my-app --stage dev
-
-# Context Attributes - variables for targeting rules
-# Resource name: context/contexts (short: ctx)
-# dtctl get contexts --project my-app              # List context attributes
-# dtctl create ctx user-tier --project my-app \
-#   --type STRING \
-#   --description "User subscription level"
-# dtctl delete ctx old-context --project my-app
-
-# Change Requests - approval workflow for changes
-# Resource name: change-request/change-requests (short: cr)
-# dtctl get cr --project my-app                    # List change requests
-# dtctl create cr --project my-app \
-#   --feature-flag new-checkout \
-#   --stage production \
-#   --enabled=true \
-#   --comment "Enabling for production"
-# dtctl apply cr <request-id> \
-#   --comment "Approved by SRE"                    # Approve request
-# dtctl close cr <request-id> \
-#   --comment "Not ready"                          # Reject request
-
-# Evaluate flag (check current state)
-# dtctl exec ff new-checkout --project my-app --stage prod
-# dtctl exec ff new-checkout --project my-app --stage prod \
-#   --context '{"user-tier":"premium"}'            # With context
-
-# Common workflows
-# Progressive rollout
-# dtctl patch ffs new-feature --project my-app --stage prod \
-#   --enabled=true \
-#   --targeting '{"if":[{"<":[{"var":"$flagd.flagKey"},0.10]},"on","off"]}'
-
-# Set project/stage defaults in context
-# dtctl config set-context prod --project my-app --stage production
-# dtctl get ff                                     # Uses default project
-# dtctl get ffs                                    # Uses default project+stage
-```
-
-**See [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md) for:**
-- Complete command reference for all resource types
-- Manifest examples (YAML/JSON)
-- Targeting rule examples (percentage rollouts, A/B tests, user segments)
-- Common workflows (progressive rollout, emergency disable)
-- Context-based configuration
-- Change request workflows
-
-### 17. Lookup Tables (Grail Resource Store)
+### 16. Lookup Tables (Grail Resource Store)
 **API Spec**: `grail-resource-store.yaml`
 
 Lookup tables are tabular files stored in Grail Resource Store that can be loaded and joined with observability data in DQL queries for data enrichment.
@@ -847,7 +729,6 @@ dtctl create workflow -f workflow.yaml
 dtctl create dashboard -f dashboard.yaml
 dtctl create notebook -f notebook.yaml
 dtctl create slo -f slo.yaml
-dtctl create settings -f settings.yaml --schema <schema-id> --scope <scope>
 dtctl create bucket -f bucket.yaml
 dtctl create edgeconnect -f edgeconnect.yaml
 
@@ -1067,7 +948,6 @@ dtctl get notebooks --mine -o json
 | `workflows` | ✅ | `owner` |
 | `slos` | ✅ | `owner` |
 | `filter-segments` | ✅ | `owner` |
-| `settings` | ❌ | N/A (scope-based) |
 | `apps` | ❌ | N/A (environment-wide) |
 
 **How it works:**
@@ -1550,7 +1430,7 @@ Exit code: 4
 - Support `--wait` flag for async operations
 
 ### Caching
-- Cache settings schemas and templates locally
+- Cache SLO templates locally
 - Cache document metadata for fast listing
 - Invalidate cache on create/update/delete
 - Provide `--no-cache` flag to force refresh

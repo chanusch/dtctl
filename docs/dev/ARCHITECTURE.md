@@ -424,7 +424,6 @@ dtctl/
 │   │   ├── automation/         # Automation API client
 │   │   ├── grail/              # Grail API clients
 │   │   ├── iam/                # IAM API client
-│   │   ├── settings/           # Settings API client
 │   │   └── ...                 # Other API clients
 │   │
 │   ├── client/                 # Core API client logic

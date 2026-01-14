@@ -44,8 +44,6 @@ This document tracks the current implementation status of dtctl. For future plan
 | **execution** | ✅ | ✅ | - | - | - | - | - | ✅ | - | - | - | - |
 | **dashboard** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
 | **notebook** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
-| **settings** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
-| **settings-schema** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 | **slo** | ✅ | ✅ | ✅ | ✅ | - | ✅ | ✅ | - | - | - | - | - |
 | **slo-template** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 | **notification** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
@@ -116,33 +114,9 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Resource Gaps
 - [ ] Document trash (list/restore deleted)
-- [ ] Settings edit
 - [ ] Function describe
 - [ ] Workflow `--mine` filter
 
-### Feature Flags (Complete Feature Set)
-**API Spec**: `feature-flags.yaml`
-**Design**: [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md)
-
-- [ ] Projects (`dtctl get projects`)
-  - [ ] Create, update, delete projects
-  - [ ] Link/unlink stages to projects
-  - [ ] List project stages
-- [ ] Stages (`dtctl get stages`)
-  - [ ] Create, update, delete stages
-  - [ ] List stages (global and project-scoped)
-- [ ] Feature Flag Definitions (`dtctl get ff`)
-  - [ ] Create, update, delete flags
-  - [ ] Support for BOOLEAN, STRING, NUMBER types
-  - [ ] Multi-variant support
-  - [ ] Edit in $EDITOR
-- [ ] Feature Flag Stage Definitions (`dtctl get ffs`)
-  - [ ] Enable/disable flags per stage
-  - [ ] Set default variant
-  - [ ] Configure targeting rules (JSON Logic)
-  - [ ] Edit stage-specific configs
-- [ ] Context Attributes (`dtctl get contexts`)
-  - [ ] Create, update, delete contexts
 ---
 
 ## Future Planned Features 🔮
@@ -153,7 +127,6 @@ See [FUTURE_FEATURES.md](FUTURE_FEATURES.md) for the complete implementation pla
 - Grail Filter Segments
 - Grail Fieldsets
 - Grail Resource Store
-- Feature Flags (comprehensive)
 
 ---
 

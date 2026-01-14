@@ -11,7 +11,6 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/bucket"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
-	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
@@ -52,7 +51,6 @@ const (
 	ResourceWorkflow  ResourceType = "workflow"
 	ResourceDashboard ResourceType = "dashboard"
 	ResourceNotebook  ResourceType = "notebook"
-	ResourceSettings  ResourceType = "settings"
 	ResourceSLO       ResourceType = "slo"
 	ResourceBucket    ResourceType = "bucket"
 	ResourceUnknown   ResourceType = "unknown"
@@ -82,10 +80,6 @@ func (a *Applier) Apply(fileData []byte, opts ApplyOptions) error {
 	}
 
 	if opts.DryRun {
-		// Use server-side validation for settings, fall back to local preview for others
-		if resourceType == ResourceSettings {
-			return a.dryRunSettings(jsonData)
-		}
 		return a.dryRun(resourceType, jsonData)
 	}
 
@@ -97,8 +91,6 @@ func (a *Applier) Apply(fileData []byte, opts ApplyOptions) error {
 		return a.applyDocument(jsonData, "dashboard", opts)
 	case ResourceNotebook:
 		return a.applyDocument(jsonData, "notebook", opts)
-	case ResourceSettings:
-		return a.applySettings(jsonData)
 	case ResourceSLO:
 		return a.applySLO(jsonData)
 	case ResourceBucket:
@@ -164,13 +156,6 @@ func detectResourceType(data []byte) (ResourceType, error) {
 			if _, hasSections := contentMap["sections"]; hasSections {
 				return ResourceNotebook, nil
 			}
-		}
-	}
-
-	// Settings objects have "schemaId" and "scope" fields
-	if _, hasSchemaID := raw["schemaId"]; hasSchemaID {
-		if _, hasScope := raw["scope"]; hasScope {
-			return ResourceSettings, nil
 		}
 	}
 
@@ -665,133 +650,6 @@ func (a *Applier) applySLO(data []byte) error {
 
 	name, _ := s["name"].(string)
 	fmt.Printf("SLO %q (%s) updated successfully\n", name, id)
-	return nil
-}
-
-// dryRunSettings validates a settings object using server-side validation
-func (a *Applier) dryRunSettings(data []byte) error {
-	var obj map[string]interface{}
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return fmt.Errorf("failed to parse settings JSON: %w", err)
-	}
-
-	schemaID, _ := obj["schemaId"].(string)
-	scope, _ := obj["scope"].(string)
-	objectID, _ := obj["objectId"].(string)
-	value, _ := obj["value"].(map[string]interface{})
-
-	if schemaID == "" {
-		return fmt.Errorf("settings object must have a 'schemaId' field")
-	}
-	if scope == "" {
-		return fmt.Errorf("settings object must have a 'scope' field")
-	}
-	if value == nil {
-		return fmt.Errorf("settings object must have a 'value' field")
-	}
-
-	handler := settings.NewHandler(a.client)
-
-	if objectID == "" {
-		// Validate create
-		if err := handler.ValidateCreate(settings.SettingsObjectCreate{
-			SchemaID: schemaID,
-			Scope:    scope,
-			Value:    value,
-		}); err != nil {
-			return err
-		}
-		fmt.Printf("Dry run: settings object for schema %q would be created (validation passed)\n", schemaID)
-		return nil
-	}
-
-	// Check if object exists for update validation
-	existing, err := handler.Get(objectID)
-	if err != nil {
-		// Object doesn't exist, validate as create
-		if err := handler.ValidateCreate(settings.SettingsObjectCreate{
-			SchemaID: schemaID,
-			Scope:    scope,
-			Value:    value,
-		}); err != nil {
-			return err
-		}
-		fmt.Printf("Dry run: settings object %q would be created (validation passed)\n", objectID)
-		return nil
-	}
-
-	// Validate update
-	if err := handler.ValidateUpdate(objectID, existing.Version, value); err != nil {
-		return err
-	}
-	fmt.Printf("Dry run: settings object %q would be updated (validation passed)\n", objectID)
-	return nil
-}
-
-// applySettings applies a settings object
-func (a *Applier) applySettings(data []byte) error {
-	// Parse to get schemaId, scope, objectId, and value
-	var obj map[string]interface{}
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return fmt.Errorf("failed to parse settings JSON: %w", err)
-	}
-
-	schemaID, _ := obj["schemaId"].(string)
-	scope, _ := obj["scope"].(string)
-	objectID, _ := obj["objectId"].(string)
-	value, _ := obj["value"].(map[string]interface{})
-
-	if schemaID == "" {
-		return fmt.Errorf("settings object must have a 'schemaId' field")
-	}
-	if scope == "" {
-		return fmt.Errorf("settings object must have a 'scope' field")
-	}
-	if value == nil {
-		return fmt.Errorf("settings object must have a 'value' field")
-	}
-
-	handler := settings.NewHandler(a.client)
-
-	if objectID == "" {
-		// No objectId - create new settings object
-		result, err := handler.Create(settings.SettingsObjectCreate{
-			SchemaID: schemaID,
-			Scope:    scope,
-			Value:    value,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create settings object: %w", err)
-		}
-
-		fmt.Printf("Settings object %q created successfully\n", result.ObjectID)
-		return nil
-	}
-
-	// Check if object exists
-	existing, err := handler.Get(objectID)
-	if err != nil {
-		// Object doesn't exist, create it
-		result, err := handler.Create(settings.SettingsObjectCreate{
-			SchemaID: schemaID,
-			Scope:    scope,
-			Value:    value,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create settings object: %w", err)
-		}
-
-		fmt.Printf("Settings object %q created successfully\n", result.ObjectID)
-		return nil
-	}
-
-	// Update existing object
-	result, err := handler.Update(objectID, existing.Version, value)
-	if err != nil {
-		return fmt.Errorf("failed to update settings object: %w", err)
-	}
-
-	fmt.Printf("Settings object %q updated successfully\n", result.ObjectID)
 	return nil
 }
 

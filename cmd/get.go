@@ -15,7 +15,6 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/notification"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/openpipeline"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
-	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/spf13/cobra"
@@ -488,116 +487,6 @@ Examples:
 
 		fmt.Printf("Notebook %q deleted (moved to trash)\n", metadata.Name)
 		return nil
-	},
-}
-
-// getSettingsSchemasCmd retrieves settings schemas
-var getSettingsSchemasCmd = &cobra.Command{
-	Use:     "settings-schemas [schema-id]",
-	Aliases: []string{"settings-schema", "schemas", "schema"},
-	Short:   "Get settings schemas",
-	Long: `Get available settings schemas.
-
-Examples:
-  # List all settings schemas
-  dtctl get settings-schemas
-
-  # Get a specific schema definition
-  dtctl get settings-schema builtin:alerting.profile
-
-  # Output as JSON
-  dtctl get settings-schemas -o json
-`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := LoadConfig()
-		if err != nil {
-			return err
-		}
-
-		c, err := NewClientFromConfig(cfg)
-		if err != nil {
-			return err
-		}
-
-		handler := settings.NewHandler(c)
-		printer := NewPrinter()
-
-		// Get specific schema if ID provided
-		if len(args) > 0 {
-			schema, err := handler.GetSchema(args[0])
-			if err != nil {
-				return err
-			}
-			return printer.Print(schema)
-		}
-
-		// List all schemas
-		list, err := handler.ListSchemas()
-		if err != nil {
-			return err
-		}
-
-		return printer.PrintList(list.Items)
-	},
-}
-
-// getSettingsCmd retrieves settings objects
-var getSettingsCmd = &cobra.Command{
-	Use:     "settings [object-id]",
-	Aliases: []string{"setting"},
-	Short:   "Get settings objects",
-	Long: `Get settings objects for a schema.
-
-Examples:
-  # List settings objects for a schema
-  dtctl get settings --schema builtin:alerting.profile
-
-  # List settings with a specific scope
-  dtctl get settings --schema builtin:alerting.profile --scope environment
-
-  # Get a specific settings object
-  dtctl get settings <object-id>
-
-  # Output as JSON
-  dtctl get settings --schema builtin:alerting.profile -o json
-`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		schemaID, _ := cmd.Flags().GetString("schema")
-		scope, _ := cmd.Flags().GetString("scope")
-
-		cfg, err := LoadConfig()
-		if err != nil {
-			return err
-		}
-
-		c, err := NewClientFromConfig(cfg)
-		if err != nil {
-			return err
-		}
-
-		handler := settings.NewHandler(c)
-		printer := NewPrinter()
-
-		// Get specific object if ID provided
-		if len(args) > 0 {
-			obj, err := handler.Get(args[0])
-			if err != nil {
-				return err
-			}
-			return printer.Print(obj)
-		}
-
-		// List objects for schema
-		if schemaID == "" {
-			return fmt.Errorf("--schema is required when listing settings objects")
-		}
-
-		list, err := handler.ListObjects(schemaID, scope, GetChunkSize())
-		if err != nil {
-			return err
-		}
-
-		return printer.PrintList(list.Items)
 	},
 }
 
@@ -1606,63 +1495,6 @@ Examples:
 	},
 }
 
-// deleteSettingsCmd deletes a settings object
-var deleteSettingsCmd = &cobra.Command{
-	Use:   "settings <object-id>",
-	Short: "Delete a settings object",
-	Long: `Delete a settings object by ID.
-
-Examples:
-  # Delete a settings object
-  dtctl delete settings <object-id>
-
-  # Delete without confirmation
-  dtctl delete settings <object-id> -y
-`,
-	Aliases: []string{"setting"},
-	Args:    cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		objectID := args[0]
-
-		cfg, err := LoadConfig()
-		if err != nil {
-			return err
-		}
-
-		c, err := NewClientFromConfig(cfg)
-		if err != nil {
-			return err
-		}
-
-		handler := settings.NewHandler(c)
-
-		// Get current version for optimistic locking
-		obj, err := handler.Get(objectID)
-		if err != nil {
-			return err
-		}
-
-		// Confirm deletion unless --force or --plain
-		if !forceDelete && !plainMode {
-			summary := obj.Summary
-			if summary == "" {
-				summary = obj.SchemaID
-			}
-			if !prompt.ConfirmDeletion("settings object", summary, objectID) {
-				fmt.Println("Deletion cancelled")
-				return nil
-			}
-		}
-
-		if err := handler.Delete(objectID, obj.Version); err != nil {
-			return err
-		}
-
-		fmt.Printf("Settings object %q deleted\n", objectID)
-		return nil
-	},
-}
-
 func init() {
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(deleteCmd)
@@ -1671,8 +1503,6 @@ func init() {
 	getCmd.AddCommand(getWorkflowExecutionsCmd)
 	getCmd.AddCommand(getDashboardsCmd)
 	getCmd.AddCommand(getNotebooksCmd)
-	getCmd.AddCommand(getSettingsSchemasCmd)
-	getCmd.AddCommand(getSettingsCmd)
 	getCmd.AddCommand(getSLOsCmd)
 	getCmd.AddCommand(getSLOTemplatesCmd)
 	getCmd.AddCommand(getNotificationsCmd)
@@ -1690,7 +1520,6 @@ func init() {
 	deleteCmd.AddCommand(deleteWorkflowCmd)
 	deleteCmd.AddCommand(deleteDashboardCmd)
 	deleteCmd.AddCommand(deleteNotebookCmd)
-	deleteCmd.AddCommand(deleteSettingsCmd)
 	deleteCmd.AddCommand(deleteSLOCmd)
 	deleteCmd.AddCommand(deleteNotificationCmd)
 	deleteCmd.AddCommand(deleteBucketCmd)
@@ -1703,10 +1532,6 @@ func init() {
 	getDashboardsCmd.Flags().Bool("mine", false, "Show only dashboards owned by current user")
 	getNotebooksCmd.Flags().String("name", "", "Filter by notebook name (partial match, case-insensitive)")
 	getNotebooksCmd.Flags().Bool("mine", false, "Show only notebooks owned by current user")
-
-	// Settings flags
-	getSettingsCmd.Flags().String("schema", "", "Schema ID to list settings for (required for listing)")
-	getSettingsCmd.Flags().String("scope", "", "Scope to filter settings (e.g., 'environment')")
 
 	// SLO flags
 	getSLOsCmd.Flags().String("filter", "", "Filter SLOs (e.g., \"name~'production'\")")
@@ -1726,7 +1551,6 @@ func init() {
 	deleteWorkflowCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteDashboardCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteNotebookCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
-	deleteSettingsCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteSLOCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteNotificationCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteBucketCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")

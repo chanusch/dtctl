@@ -90,16 +90,6 @@ func TestDetectResourceType(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name: "settings object",
-			input: `{
-				"schemaId": "builtin:test",
-				"scope": "environment",
-				"value": {"enabled": true}
-			}`,
-			expected: ResourceSettings,
-			wantErr:  false,
-		},
-		{
 			name: "bucket",
 			input: `{
 				"bucketName": "my-bucket",

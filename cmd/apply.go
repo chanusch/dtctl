@@ -35,7 +35,6 @@ Supported resource types:
   - Dashboards
   - Notebooks
   - SLOs
-  - Settings objects
   - Grail buckets
 
 Examples:
