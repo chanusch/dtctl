@@ -1419,21 +1419,29 @@ Examples:
 
 // deleteSettingsCmd deletes a settings object
 var deleteSettingsCmd = &cobra.Command{
-	Use:   "settings <object-id>",
+	Use:   "settings <object-id-or-uid>",
 	Short: "Delete a settings object",
-	Long: `Delete a settings object by ID.
+	Long: `Delete a settings object by objectId or UID.
+
+You can specify either the full objectId or the UID (UUID format).
+When using a UID, you MUST specify --schema.
 
 Examples:
-  # Delete a settings object
-  dtctl delete settings <object-id>
+  # Delete by objectId
+  dtctl delete settings vu9U3hXa3q0AAAABABRidWlsdGluOnJ1bS53ZWIubmFtZQ...
+
+  # Delete by UID (requires --schema)
+  dtctl delete settings e1cd3543-8603-3895-bcee-34d20c700074 --schema builtin:openpipeline.logs.pipelines
 
   # Delete without confirmation
-  dtctl delete settings <object-id> -y
+  dtctl delete settings <object-id-or-uid> -y
 `,
 	Aliases: []string{"setting"},
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		objectID := args[0]
+		schemaID, _ := cmd.Flags().GetString("schema")
+		scope, _ := cmd.Flags().GetString("scope")
 
 		cfg, err := LoadConfig()
 		if err != nil {
@@ -1448,7 +1456,7 @@ Examples:
 		handler := settings.NewHandler(c)
 
 		// Get current settings object for confirmation
-		obj, err := handler.Get(objectID)
+		obj, err := handler.GetWithContext(objectID, schemaID, scope)
 		if err != nil {
 			return err
 		}
@@ -1465,7 +1473,7 @@ Examples:
 			}
 		}
 
-		if err := handler.Delete(objectID); err != nil {
+		if err := handler.DeleteWithContext(objectID, schemaID, scope); err != nil {
 			return err
 		}
 
@@ -1476,19 +1484,25 @@ Examples:
 
 // updateSettingsCmd updates a settings object
 var updateSettingsCmd = &cobra.Command{
-	Use:   "settings <object-id> -f <file>",
+	Use:   "settings <object-id-or-uid> -f <file>",
 	Short: "Update a settings object",
 	Long: `Update an existing settings object from a YAML or JSON file.
 
+You can specify either the full objectId or the UID (UUID format).
+When using a UID, you MUST specify --schema.
+
 Examples:
-  # Update a settings object
-  dtctl update settings <object-id> -f pipeline.yaml
+  # Update by objectId
+  dtctl update settings vu9U3hXa3q0AAAA... -f pipeline.yaml
+
+  # Update by UID (requires --schema)
+  dtctl update settings e1cd3543-8603-3895-bcee-34d20c700074 -f pipeline.yaml --schema builtin:openpipeline.logs.pipelines
 
   # Update with template variables
-  dtctl update settings <object-id> -f settings.yaml --set name=prod
+  dtctl update settings <object-id-or-uid> -f settings.yaml --set name=prod
 
   # Dry run to preview
-  dtctl update settings <object-id> -f settings.yaml --dry-run
+  dtctl update settings <object-id-or-uid> -f settings.yaml --dry-run
 `,
 	Aliases: []string{"setting"},
 	Args:    cobra.ExactArgs(1),
@@ -1496,6 +1510,8 @@ Examples:
 		objectID := args[0]
 		file, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")
+		schemaID, _ := cmd.Flags().GetString("schema")
+		scope, _ := cmd.Flags().GetString("scope")
 
 		if file == "" {
 			return fmt.Errorf("--file is required")
@@ -1554,7 +1570,7 @@ Examples:
 
 		handler := settings.NewHandler(c)
 
-		result, err := handler.Update(objectID, value)
+		result, err := handler.UpdateWithContext(objectID, value, schemaID, scope)
 		if err != nil {
 			return fmt.Errorf("failed to update settings object: %w", err)
 		}
@@ -1707,10 +1723,18 @@ Examples:
 
 // getSettingsCmd retrieves settings objects
 var getSettingsCmd = &cobra.Command{
-	Use:     "settings [object-id]",
+	Use:     "settings [object-id-or-uid]",
 	Aliases: []string{"setting"},
 	Short:   "Get settings objects",
 	Long: `Get settings objects for a schema.
+
+You can retrieve a specific settings object by providing either:
+- The full objectId (base64-encoded composite key) - no flags needed
+- The UID (UUID format) - REQUIRES --schema flag
+
+When using a UID, you MUST specify --schema to narrow the search. This prevents
+expensive operations that could search through thousands of objects and put load
+on the Dynatrace backend.
 
 Examples:
   # List settings objects for a schema
@@ -1719,8 +1743,14 @@ Examples:
   # List settings with a specific scope
   dtctl get settings --schema builtin:openpipeline.logs.pipelines --scope environment
 
-  # Get a specific settings object
-  dtctl get settings <object-id>
+  # Get by objectId (direct API call, no flags needed)
+  dtctl get settings vu9U3hXa3q0AAAABABRidWlsdGluOnJ1bS53ZWIubmFtZQ...
+
+  # Get by UID (requires --schema flag)
+  dtctl get settings e1cd3543-8603-3895-bcee-34d20c700074 --schema builtin:openpipeline.logs.pipelines
+
+  # Get by UID with custom scope
+  dtctl get settings e1cd3543-8603-3895-bcee-34d20c700074 --schema builtin:openpipeline.logs.pipelines --scope environment
 
   # Output as JSON
   dtctl get settings --schema builtin:openpipeline.logs.pipelines -o json
@@ -1744,7 +1774,7 @@ Examples:
 
 		// Get specific object if ID provided
 		if len(args) > 0 {
-			obj, err := handler.Get(args[0])
+			obj, err := handler.GetWithContext(args[0], schemaID, scope)
 			if err != nil {
 				return err
 			}
@@ -1824,13 +1854,19 @@ func init() {
 	getAnalyzersCmd.Flags().String("filter", "", "Filter analyzers (e.g., \"name contains 'forecast'\")")
 
 	// Settings flags
-	getSettingsCmd.Flags().String("schema", "", "Schema ID to list settings for (required for listing)")
+	getSettingsCmd.Flags().String("schema", "", "Schema ID (required when listing or using UID)")
 	getSettingsCmd.Flags().String("scope", "", "Scope to filter settings (e.g., 'environment')")
 
 	// Update settings flags
 	updateSettingsCmd.Flags().StringP("file", "f", "", "file containing settings value (required)")
 	updateSettingsCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
+	updateSettingsCmd.Flags().String("schema", "", "Schema ID (required when using UID)")
+	updateSettingsCmd.Flags().String("scope", "", "Scope for UID resolution (optional, defaults to 'environment')")
 	_ = updateSettingsCmd.MarkFlagRequired("file")
+
+	// Delete settings flags
+	deleteSettingsCmd.Flags().String("schema", "", "Schema ID (required when using UID)")
+	deleteSettingsCmd.Flags().String("scope", "", "Scope for UID resolution (optional, defaults to 'environment')")
 
 	// Add --force flag to all delete commands
 	deleteWorkflowCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")

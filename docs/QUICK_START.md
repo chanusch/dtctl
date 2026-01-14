@@ -1263,7 +1263,7 @@ dtctl describe openpipeline logs
 
 ---
 
-## Settings API v2
+## Settings API
 
 The Settings API provides a unified way to manage Dynatrace configurations, including OpenPipeline pipelines, ingest sources, and routing configurations. Settings are organized by schemas and scopes.
 
