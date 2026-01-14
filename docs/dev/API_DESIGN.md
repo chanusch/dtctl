@@ -492,7 +492,96 @@ dtctl get openpipelines -o json                  # Output as JSON
 # dtctl ingest --pipeline <id> -f data.json      # Test ingest
 ```
 
-### 12. Vulnerabilities
+### 12. Settings API v2
+**API Spec**: `/platform/classic/environment-api/v2/settings`
+
+Settings API v2 provides access to Dynatrace configuration objects including OpenPipeline configurations, monitoring settings, and other environment settings. Each settings type is defined by a schema, and objects are instances of these schemas.
+
+```bash
+# Schemas (Settings Types)
+# Resource name: settings-schemas (short: schema, schemas)
+dtctl get settings-schemas                       # List all schemas
+dtctl get settings-schemas | grep openpipeline   # Filter for OpenPipeline schemas
+dtctl describe settings-schema builtin:openpipeline.logs.pipelines  # Schema details
+
+# Settings Objects
+# Resource name: settings (short: setting)
+dtctl get settings --schema builtin:openpipeline.logs.pipelines  # List settings for schema
+dtctl get settings --schema <schema-id> --scope environment      # Filter by scope
+dtctl get setting <object-id>                    # Get specific settings object
+dtctl describe setting <object-id>               # Detailed view with metadata
+
+# Create settings
+dtctl create settings -f pipeline-config.yaml    # Create from file
+dtctl create settings -f config.yaml --set env=prod --set team=platform
+
+# Update settings
+dtctl update settings <object-id> -f config.yaml # Update existing
+dtctl update settings <object-id> -f config.yaml --set version=v2
+
+# Apply settings (create or update)
+dtctl apply -f settings-config.yaml              # Idempotent operation
+
+# Delete settings
+dtctl delete settings <object-id>                # Delete settings object
+dtctl delete settings <object-id> -y             # Skip confirmation
+
+# Template variables support
+dtctl create settings -f config.yaml --set environment={{.env}} --set owner={{.team}}
+```
+
+**Example Settings Object (YAML)**:
+```yaml
+schemaId: builtin:openpipeline.logs.pipelines
+scope: environment
+value:
+  id: custom-log-pipeline
+  enabled: true
+  processors:
+    - dqlProcessor:
+        id: enrich-logs
+        enabled: true
+        description: "Enrich logs with metadata"
+        processor: |
+          fieldsAdd(environment: "production")
+  routing:
+    - type: default
+      output: default_logs
+```
+
+**Common Use Cases**:
+
+```bash
+# OpenPipeline Configuration Management
+# List all OpenPipeline schemas
+dtctl get settings-schemas | grep openpipeline
+
+# View logs pipeline configuration
+dtctl get settings --schema builtin:openpipeline.logs.pipelines
+
+# Update logs pipeline
+dtctl apply -f logs-pipeline.yaml
+
+# Deploy pipeline across environments
+dtctl apply -f base-pipeline.yaml --set env=dev --context dev
+dtctl apply -f base-pipeline.yaml --set env=prod --context prod
+
+# Monitoring Settings
+# List monitoring schemas
+dtctl get settings-schemas | grep monitoring
+
+# Get current monitoring settings
+dtctl get settings --schema builtin:monitoring.settings
+```
+
+**Notes**:
+- Settings objects use optimistic locking (version-based)
+- Update/Delete operations automatically handle version management
+- Scope determines where settings apply (environment, tenant, etc.)
+- Settings are schema-validated by the API
+- Many schemas are read-only (managed by Dynatrace)
+
+### 13. Vulnerabilities
 **API Spec**: `vulnerabilities.yaml`
 
 ```bash
@@ -503,7 +592,7 @@ dtctl describe vulnerability <id>                # Vulnerability details
 dtctl get vulnerabilities --affected <entity-id> # By affected entity
 ```
 
-### 13. Davis AI
+### 14. Davis AI
 **API Specs**: `davis-analyzers.yaml`, `davis-copilot.yaml`
 
 Davis AI provides predictive/causal analysis (Analyzers) and generative AI chat (CoPilot).
@@ -572,7 +661,7 @@ dtctl exec copilot document-search "performance" --exclude doc-123,doc-456
 }
 ```
 
-### 14. Platform Management
+### 15. Platform Management
 **API Spec**: `platform-management.yaml`
 
 ```bash
@@ -582,7 +671,7 @@ dtctl exec copilot document-search "performance" --exclude doc-123,doc-456
 # dtctl get accounts                               # List accounts (if multi-account)
 ```
 
-### 15. Hub (Extensions)
+### 16. Hub (Extensions)
 **API Specs**: `hub.yaml`, `hub-certificates.yaml`
 
 ```bash
@@ -596,7 +685,7 @@ dtctl exec copilot document-search "performance" --exclude doc-123,doc-456
 # dtctl get certificates                           # List certificates
 ```
 
-### 16. Lookup Tables (Grail Resource Store)
+### 17. Lookup Tables (Grail Resource Store)
 **API Spec**: `grail-resource-store.yaml`
 
 Lookup tables are tabular files stored in Grail Resource Store that can be loaded and joined with observability data in DQL queries for data enrichment.

@@ -49,6 +49,7 @@ This document tracks the current implementation status of dtctl. For future plan
 | **notification** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
 | **bucket** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
 | **openpipeline** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
+| **settings** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
 | **app** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
 | **function** | ✅ | - | - | - | - | - | ✅ | - | - | - | - | - |
 | **edgeconnect** | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - | - | - |

@@ -1263,6 +1263,211 @@ dtctl describe openpipeline logs
 
 ---
 
+## Settings API v2
+
+The Settings API provides a unified way to manage Dynatrace configurations, including OpenPipeline pipelines, ingest sources, and routing configurations. Settings are organized by schemas and scopes.
+
+### List Settings Schemas
+
+Discover available configuration schemas:
+
+```bash
+# List all available schemas
+dtctl get settings-schemas
+
+# Filter for OpenPipeline schemas
+dtctl get settings-schemas | grep openpipeline
+
+# Get a specific schema definition
+dtctl get settings-schema builtin:openpipeline.logs.pipelines
+
+# View detailed schema information
+dtctl describe settings-schema builtin:openpipeline.logs.pipelines
+
+# Output as JSON for processing
+dtctl get settings-schemas -o json
+```
+
+**Common OpenPipeline Schemas:**
+- `builtin:openpipeline.logs.pipelines` - Log processing pipelines
+- `builtin:openpipeline.logs.ingest-sources` - Log ingest sources
+- `builtin:openpipeline.logs.routing` - Log routing configuration
+- `builtin:openpipeline.spans.pipelines` - Trace span pipelines
+- `builtin:openpipeline.metrics.pipelines` - Metric pipelines
+- `builtin:openpipeline.bizevents.pipelines` - Business event pipelines
+
+### List Settings Objects
+
+View configured settings for a schema:
+
+```bash
+# List all settings objects for a schema
+dtctl get settings --schema builtin:openpipeline.logs.pipelines
+
+# Filter by scope
+dtctl get settings --schema builtin:openpipeline.logs.pipelines --scope environment
+
+# Get a specific settings object
+dtctl get settings aaaaaaaa-bbbb-cccc-dddd-000000000001
+
+# Output as JSON
+dtctl get settings --schema builtin:openpipeline.logs.pipelines -o json
+```
+
+### Create Settings Objects
+
+Create new configuration objects from YAML or JSON files:
+
+```bash
+# Create a log pipeline
+dtctl create settings -f log-pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment
+
+# Create with template variables
+dtctl create settings -f pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment \
+  --set environment=production,retention=90
+
+# Dry run to preview
+dtctl create settings -f pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment \
+  --dry-run
+```
+
+**Example pipeline file** (`log-pipeline.yaml`):
+
+```yaml
+customId: production-logs-pipeline
+displayName: Production Log Processing Pipeline
+processing:
+  - processor: fields-add
+    fields:
+      - name: environment
+        value: production
+      - name: team
+        value: platform
+  - processor: dql
+    processorDefinition:
+      dpl: |
+        fieldsAdd(severity: if(loglevel=="ERROR", "critical", "info"))
+storage:
+  table: logs
+  retention: 90
+routing:
+  catchAll: false
+  rules:
+    - matcher: matchesValue(log.source, "kubernetes")
+      target: builtin:storage-default
+```
+
+### Update Settings Objects
+
+Modify existing settings:
+
+```bash
+# Update a settings object
+dtctl update settings aaaaaaaa-bbbb-cccc-dddd-000000000001 \
+  -f updated-pipeline.yaml
+
+# Update with template variables
+dtctl update settings aaaaaaaa-bbbb-cccc-dddd-000000000001 \
+  -f pipeline.yaml \
+  --set retention=120
+
+# Dry run
+dtctl update settings aaaaaaaa-bbbb-cccc-dddd-000000000001 \
+  -f pipeline.yaml \
+  --dry-run
+```
+
+**Note:** Updates use optimistic locking automatically - the current version is fetched before updating to prevent conflicts.
+
+### Delete Settings Objects
+
+Remove settings objects:
+
+```bash
+# Delete a settings object (with confirmation)
+dtctl delete settings aaaaaaaa-bbbb-cccc-dddd-000000000001
+
+# Delete without confirmation
+dtctl delete settings aaaaaaaa-bbbb-cccc-dddd-000000000001 -y
+```
+
+### OpenPipeline Configuration Workflow
+
+Complete workflow for managing OpenPipeline configurations:
+
+```bash
+# 1. Discover available pipeline schemas
+dtctl get settings-schemas | grep "openpipeline.logs"
+
+# 2. View the schema structure
+dtctl describe settings-schema builtin:openpipeline.logs.pipelines
+
+# 3. List existing pipelines
+dtctl get settings --schema builtin:openpipeline.logs.pipelines
+
+# 4. Export existing pipeline for reference
+dtctl get settings <pipeline-id> -o yaml > reference-pipeline.yaml
+
+# 5. Create your new pipeline
+cat > my-pipeline.yaml <<EOF
+customId: my-custom-pipeline
+displayName: My Custom Pipeline
+processing:
+  - processor: fields-add
+    fields:
+      - name: source
+        value: my-app
+storage:
+  table: logs
+EOF
+
+# 6. Create the pipeline
+dtctl create settings -f my-pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment
+
+# 7. Verify it was created
+dtctl get settings --schema builtin:openpipeline.logs.pipelines | grep my-custom
+```
+
+### Multi-Environment Configuration
+
+Deploy the same configuration across environments:
+
+```bash
+# Export from dev
+dtctl --context dev get settings <pipeline-id> -o yaml > pipeline.yaml
+
+# Review and modify for production
+$EDITOR pipeline.yaml
+
+# Deploy to staging
+dtctl --context staging create settings -f pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment \
+  --set environment=staging
+
+# Deploy to production
+dtctl --context prod create settings -f pipeline.yaml \
+  --schema builtin:openpipeline.logs.pipelines \
+  --scope environment \
+  --set environment=production
+```
+
+**Required Token Scopes:**
+- `settings:schemas:read` - Read schema definitions (included in settings:objects:read)
+- `settings:objects:read` - List and view settings objects
+- `settings:objects:write` - Create, update, and delete settings objects
+- `settings:objects:admin` - Admin access for routing management (optional)
+
+---
+
 ## App Engine
 
 Manage Dynatrace apps and functions.

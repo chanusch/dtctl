@@ -64,6 +64,7 @@ dtctl create lookup -f error_codes.csv --path /lookups/production/errors --looku
 | Dashboards & Notebooks | get, describe, create, edit, delete, share |
 | DQL Queries | execute with template variables |
 | SLOs | get, create, delete, apply, evaluate |
+| Settings (v2) | get schemas, get/create/update/delete objects (OpenPipeline configs) |
 | Buckets | get, describe, create, delete |
 | Lookup Tables | get, describe, create, delete (CSV auto-detection) |
 | And more... | OpenPipeline, EdgeConnect, Davis AI |
