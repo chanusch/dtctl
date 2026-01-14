@@ -75,7 +75,7 @@ UID resolution works for all settings commands:
 Shows human-readable decoded fields:
 
 ```bash
-$ dtctl get settings --schema builtin:rum.web.name
+dtctl get settings --schema builtin:rum.web.name
 ```
 
 **Columns shown:**
@@ -90,7 +90,7 @@ $ dtctl get settings --schema builtin:rum.web.name
 Includes additional technical fields:
 
 ```bash
-$ dtctl get settings --schema builtin:rum.web.name -o wide
+dtctl get settings --schema builtin:rum.web.name -o wide
 ```
 
 **Additional columns:**
@@ -103,7 +103,7 @@ $ dtctl get settings --schema builtin:rum.web.name -o wide
 Always shows the original API response fields without modification:
 
 ```bash
-$ dtctl get settings <object-id> -o json
+dtctl get settings <object-id> -o json
 ```
 
 Output includes:
