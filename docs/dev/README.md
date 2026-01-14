@@ -44,20 +44,8 @@ Detailed implementation plan for upcoming features:
 - Platform Management
 - State Management for Apps
 - Grail Filter Segments, Fieldsets, Resource Store
-- Feature Flags (with link to detailed spec)
 
 **Use this for**: Understanding upcoming work, implementation priorities, detailed task breakdown.
-
----
-
-### [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md)
-Comprehensive specification for Feature Flags API support:
-- Resource hierarchy (projects, stages, flags, targeting)
-- Complete command reference with examples
-- Common workflows (progressive rollout, A/B testing, etc.)
-- Manifest formats
-
-**Use this for**: Understanding the complex Feature Flags API, implementation reference.
 
 ---
 
@@ -77,7 +65,7 @@ Comprehensive specification for Feature Flags API support:
 
 **Proposing a new feature?**
 1. Check [FUTURE_FEATURES.md](FUTURE_FEATURES.md) to avoid duplicates
-2. Create detailed design spec (see FEATURE_FLAGS_API_DESIGN.md as example)
+2. Create detailed design spec
 3. Add to future features plan
 
 ---

@@ -1,7 +1,5 @@
 # Future Features Implementation Plan
 
-> **Note**: For detailed Feature Flags API design, see [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md)
-
 ## Overview
 
 This document outlines the implementation plan for adding new API categories to dtctl:
@@ -10,7 +8,6 @@ This document outlines the implementation plan for adding new API categories to 
 3. Grail Filter Segments
 4. Grail Fieldsets
 5. Grail Resource Store
-6. Feature Flags (complete implementation - see detailed spec in separate doc)
 
 ## Implementation Order
 
@@ -21,7 +18,6 @@ We'll implement in this order (simple to complex):
 3. **Grail Fieldsets** - Standard CRUD pattern
 4. **Grail Filter Segments** - Standard CRUD pattern
 5. **Grail Resource Store** - Standard CRUD pattern
-6. **Feature Flags** - Complex, multiple resources with relationships
 
 ## 1. Platform Management
 
@@ -31,7 +27,6 @@ We'll implement in this order (simple to complex):
 
 - `GET /platform/management/v1/environment` - Get environment info
 - `GET /platform/management/v1/environment/license` - Get license info
-- `GET /platform/management/v1/environment/settings` - Get environment settings
 
 ### Commands
 
@@ -43,15 +38,12 @@ dtctl describe environment
 # Get license information
 dtctl get license
 dtctl describe license
-
-# Get environment settings
-dtctl get environment-settings
 ```
 
 ### Files to Create/Modify
 
 - `pkg/resources/platform/platform.go` - Handler implementation
-- `cmd/get.go` - Add commands: getEnvironmentCmd, getLicenseCmd, getEnvironmentSettingsCmd
+- `cmd/get.go` - Add commands: getEnvironmentCmd, getLicenseCmd
 - `cmd/describe.go` - Add describe commands for detailed view
 
 ### Data Structures
@@ -70,10 +62,6 @@ type License struct {
     ExpirationDate time.Time `json:"expirationDate"`
     MaxDemUnits    int       `json:"maxDemUnits"`
     // ... other fields from API spec
-}
-
-type EnvironmentSettings struct {
-    // Fields from API spec
 }
 ```
 
@@ -307,65 +295,6 @@ type Resource struct {
 
 ---
 
-## 6. Feature Flags (Complete Implementation)
-
-**API Spec:** `feature-flags.yaml`
-
-> **📖 For detailed API design, commands, workflows, and examples, see [FEATURE_FLAGS_API_DESIGN.md](FEATURE_FLAGS_API_DESIGN.md)**
-
-This is the most complex feature with multiple interrelated resources: Projects, Stages, Feature Flags, Stage Definitions, Context Attributes, and Change Requests.
-
-### Implementation Summary
-
-**Resources:**
-- `ff-project` - Projects (containers for flags)
-- `ff-stage` - Stages (environments like dev, prod)
-- `ff` - Feature flag definitions
-- `ff-stage-def` - Per-stage flag configurations
-- `ff-context` - Context attributes for targeting
-- `ff-cr` - Change requests (approval workflow)
-
-**Core Commands:**
-```bash
-# Projects and Stages
-dtctl get ff-projects
-dtctl get ff-stages
-
-# Feature Flags
-dtctl get ff --project <project-id>
-dtctl describe ff <flag-key>
-dtctl apply -f flag.yaml
-
-# Stage-specific configuration
-dtctl ff enable <flag-key> --stage prod
-dtctl ff disable <flag-key> --stage dev
-```
-
-### Files to Create/Modify
-
-- `pkg/resources/featureflag/project.go` - Projects handler
-- `pkg/resources/featureflag/stage.go` - Stages handler
-- `pkg/resources/featureflag/flag.go` - Flag definitions handler
-- `pkg/resources/featureflag/stagedef.go` - Stage definitions handler
-- `pkg/resources/featureflag/context.go` - Context attributes handler
-- `pkg/resources/featureflag/changerequest.go` - Change requests handler (optional)
-- `cmd/get.go` - Add all get commands
-- `cmd/describe.go` - Add all describe commands
-- `cmd/create.go` - Add all create commands
-- `cmd/edit.go` - Add all edit commands
-- `cmd/delete.go` - Add all delete commands
-- `cmd/apply.go` - Add feature flag support
-- `cmd/featureflag.go` - New file for FF-specific subcommands (enable, disable, link, unlink)
-
-### Scopes Required
-- `feature-flag:projects:read` / `write`
-- `feature-flag:stages:read` / `write`
-- `feature-flag:flags:read` / `write`
-- `feature-flag:context-attributes:read` / `write`
-- `feature-flag:change-requests:read` / `write`
-
----
-
 ## Testing Strategy
 
 For each feature:
@@ -381,11 +310,6 @@ For each feature:
 - `pkg/resources/grail/fieldsets_test.go`
 - `pkg/resources/grail/segments_test.go`
 - `pkg/resources/grail/resourcestore_test.go`
-- `pkg/resources/featureflag/project_test.go`
-- `pkg/resources/featureflag/stage_test.go`
-- `pkg/resources/featureflag/flag_test.go`
-- `pkg/resources/featureflag/stagedef_test.go`
-- `pkg/resources/featureflag/context_test.go`
 
 ---
 
@@ -397,7 +321,6 @@ For each feature:
 2. **QUICK_START.md** - Add examples for new resources
 3. **API_DESIGN.md** - Document new commands and flags
 4. **IMPLEMENTATION_STATUS.md** - Mark features as complete
-5. **FEATURE_FLAGS_API_DESIGN.md** - Update with actual implementation details
 
 ### New Documentation
 
@@ -431,26 +354,7 @@ Create usage examples for each resource type with common workflows.
 - [ ] Grail Resource Store tests
 - [ ] Grail resources documentation
 
-### Phase 4: Feature Flags (Day 4-6)
-- [ ] Projects implementation
-- [ ] Projects commands
-- [ ] Projects tests
-- [ ] Stages implementation
-- [ ] Stages commands
-- [ ] Stages tests
-- [ ] Flag Definitions implementation
-- [ ] Flag Definitions commands
-- [ ] Flag Definitions tests
-- [ ] Stage Definitions implementation
-- [ ] Stage Definitions commands
-- [ ] Stage Definitions tests
-- [ ] Context Attributes implementation
-- [ ] Context Attributes commands
-- [ ] Context Attributes tests
-- [ ] Feature Flags documentation
-- [ ] Feature Flags examples
-
-### Phase 5: Final Polish (Day 7)
+### Phase 4: Final Polish (Day 4)
 - [ ] Update all documentation
 - [ ] Integration tests
 - [ ] E2E tests
@@ -465,9 +369,8 @@ Following kubectl conventions:
 
 - **Singular for get specific**: `dtctl get environment`, `dtctl get license`
 - **Plural for list**: `dtctl get fieldsets`, `dtctl get segments`
-- **Short aliases**: `ff` for feature-flags, `seg` for segments, `fs` for fieldsets
+- **Short aliases**: `seg` for segments, `fs` for fieldsets
 - **Consistent verbs**: get, describe, create, edit, delete, apply
-- **Hierarchical for relationships**: `dtctl ff enable <flag>`, `dtctl ff-project link-stage`
 
 ---
 
@@ -523,18 +426,16 @@ Support global flags:
 - **Grail Fieldsets**: 4-5 hours
 - **Grail Filter Segments**: 4-5 hours
 - **Grail Resource Store**: 4-5 hours
-- **Feature Flags**: 15-20 hours
 - **Testing**: 5-8 hours
 - **Documentation**: 3-4 hours
 
-**Total**: ~40-53 hours (5-7 working days)
+**Total**: ~25-33 hours (3-4 working days)
 
 ---
 
 ## Notes
 
 - All new features require corresponding API tokens with appropriate scopes
-- Feature Flags API is in v0.3 (beta), so expect potential API changes
 - Grail resources share common patterns, implement one as template for others
 - State Management is destructive (delete-only), add appropriate confirmations
 - Platform Management is read-only, simplest to implement first
