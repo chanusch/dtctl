@@ -48,7 +48,7 @@ This document tracks the current implementation status of dtctl. For future plan
 | **slo-template** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 | **notification** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
 | **bucket** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
-| **settings** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
+| **settings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - |
 | **app** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
 | **function** | ✅ | - | - | - | - | - | ✅ | - | - | - | - | - |
 | **edgeconnect** | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - | - | - |

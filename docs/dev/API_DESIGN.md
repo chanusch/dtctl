@@ -510,6 +510,11 @@ dtctl update settings <object-id> -f config.yaml --set version=v2
 # Apply settings (create or update)
 dtctl apply -f settings-config.yaml              # Idempotent operation
 
+# Edit settings
+dtctl edit setting <object-id>                   # Edit in $EDITOR (YAML by default)
+dtctl edit setting <object-id> --format=json     # Edit in JSON format
+dtctl edit setting <uid> --schema <schema-id> --scope environment  # Edit using UID
+
 # Delete settings
 dtctl delete settings <object-id>                # Delete settings object
 dtctl delete settings <object-id> -y             # Skip confirmation
