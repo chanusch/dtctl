@@ -281,3 +281,65 @@ func TestSettingsObjectWithModificationInfo(t *testing.T) {
 		t.Errorf("CreatedBy = %v, want user@example.com", result.ModificationInfo.CreatedBy)
 	}
 }
+
+func TestSettingsObjectsListEmptySchemaId(t *testing.T) {
+	// Test that we correctly handle API responses with empty schemaId fields
+	// This is a known API issue where the schemaId field is returned as empty string
+	jsonData := `{
+		"items": [
+			{
+				"objectId": "vu9U3hXa3q0AAAA",
+				"schemaId": "",
+				"scope": "",
+				"summary": null,
+				"value": {
+					"enabled": true
+				}
+			},
+			{
+				"objectId": "vu9U3hXa3q0BBBB",
+				"schemaId": "",
+				"scope": "",
+				"summary": null,
+				"value": {
+					"enabled": false
+				}
+			}
+		],
+		"totalCount": 2
+	}`
+
+	var result SettingsObjectsList
+	err := json.Unmarshal([]byte(jsonData), &result)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal SettingsObjectsList: %v", err)
+	}
+
+	// Before the fix is applied, schemaId should be empty
+	if result.Items[0].SchemaID != "" {
+		t.Errorf("Expected empty SchemaID before fix, got: %v", result.Items[0].SchemaID)
+	}
+
+	// Simulate what ListObjects does: populate empty schemaId from query parameter
+	expectedSchemaID := "builtin:anomaly-detection.services"
+	for i := range result.Items {
+		if result.Items[i].SchemaID == "" {
+			result.Items[i].SchemaID = expectedSchemaID
+		}
+	}
+
+	// After the fix, schemaId should be populated
+	for i, item := range result.Items {
+		if item.SchemaID != expectedSchemaID {
+			t.Errorf("Item %d: SchemaID = %v, want %v", i, item.SchemaID, expectedSchemaID)
+		}
+	}
+
+	// Verify object IDs are still intact
+	if result.Items[0].ObjectID != "vu9U3hXa3q0AAAA" {
+		t.Errorf("ObjectID = %v, want vu9U3hXa3q0AAAA", result.Items[0].ObjectID)
+	}
+	if result.Items[1].ObjectID != "vu9U3hXa3q0BBBB" {
+		t.Errorf("ObjectID = %v, want vu9U3hXa3q0BBBB", result.Items[1].ObjectID)
+	}
+}

@@ -178,6 +178,15 @@ func (h *Handler) ListObjects(schemaID, scope string, chunkSize int64) (*Setting
 			return nil, fmt.Errorf("failed to parse settings objects response: %w", err)
 		}
 
+		// API bug workaround: The API returns empty schemaId field, so populate it from the query parameter
+		if schemaID != "" {
+			for i := range result.Items {
+				if result.Items[i].SchemaID == "" {
+					result.Items[i].SchemaID = schemaID
+				}
+			}
+		}
+
 		allItems = append(allItems, result.Items...)
 		totalCount = result.TotalCount
 
