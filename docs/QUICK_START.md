@@ -540,6 +540,90 @@ echo 'fetch logs | filter status="ERROR"' | dtctl query -o table
 
 **Tip:** Using single-quoted heredocs (`<<'EOF'`) preserves all special characters exactly as written—no escaping needed.
 
+### PowerShell Quoting Issues and Solutions
+
+PowerShell has different quoting rules that can cause problems with inline DQL queries. Here's how to handle them:
+
+#### The Problem
+
+```powershell
+# ❌ FAILS - PowerShell removes inner double quotes
+dtctl query 'fetch logs, bucket:{"custom-logs"} | filter contains(host.name, "api")'
+# Error: MANDATORY_PARAMETER_HAS_TO_BE_CONSTANT
+# PowerShell passes: bucket:{custom-logs} (missing quotes around "custom-logs")
+
+# ❌ FAILS - DQL doesn't support single quotes
+dtctl query "fetch logs, bucket:{'custom-logs'} | filter contains(host.name, 'api')"
+# Error: PARSE_ERROR_SINGLE_QUOTES
+# Single quotes are not supported. Please use double quotes for strings.
+```
+
+#### Solution 1: Use PowerShell Here-Strings (Recommended)
+
+PowerShell's here-string syntax (`@'...'@`) preserves all characters exactly:
+
+```powershell
+# ✅ WORKS - Use @'...'@ for verbatim strings
+dtctl query -f - -o json @'
+fetch logs, bucket:{"custom-logs"}
+| filter contains(host.name, "api")
+| limit 10
+'@
+
+# ✅ More complex example with multiple quotes
+dtctl query -f - -o json @'
+fetch logs, bucket:{"application-logs"}
+| filter contains(log.source, "backend")
+| filter status = "ERROR"
+| summarize count(), by:{log.source}
+| limit 100
+'@
+
+# ✅ Works with any DQL query structure
+dtctl query -f - -o csv @'
+timeseries avg(dt.host.cpu.usage), by:{dt.entity.host}
+| filter avg > 80
+'@
+```
+
+#### Solution 2: Use a Query File
+
+Save your query to a file and reference it:
+
+```powershell
+# Save query to file
+@"
+fetch logs, bucket:{"custom-logs"}
+| filter contains(host.name, "api")
+| limit 10
+"@ | Out-File -Encoding UTF8 query.dql
+
+# Execute from file
+dtctl query -f query.dql -o json
+```
+
+#### Solution 3: Pipe from Get-Content
+
+```powershell
+# Read from file and pipe
+Get-Content query.dql | dtctl query -o json
+
+# Or use cat alias
+cat query.dql | dtctl query -o json
+```
+
+#### Quick Reference: PowerShell vs Bash
+
+| Shell | Heredoc Syntax | Example |
+|-------|----------------|---------|
+| **Bash/Zsh** | `<<'EOF'` | `dtctl query -f - <<'EOF'`<br>`fetch logs`<br>`EOF` |
+| **PowerShell** | `@'...'@` | `dtctl query -f - @'`<br>`fetch logs`<br>`'@` |
+
+**Why This Matters:**
+- DQL requires double quotes for strings (e.g., `"custom-logs"`, `"ERROR"`, `"api"`)
+- PowerShell's quote parsing can strip or convert these quotes
+- Using `-f -` (stdin) with here-strings bypasses shell quote parsing entirely
+
 **Example query file** (`queries/errors.dql`):
 
 ```dql

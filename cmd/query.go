@@ -45,6 +45,11 @@ Examples:
   metrics | filter startsWith(metric.key, "dt") | limit 10
   EOF
 
+  # PowerShell: Use here-strings to avoid quote issues
+  dtctl query -f - -o json @'
+  fetch logs, bucket:{"custom-logs"} | filter contains(host.name, "api")
+  '@
+
   # Pipe query from file
   cat query.dql | dtctl query -o json
 
