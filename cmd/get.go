@@ -46,6 +46,9 @@ Examples:
 
   # Output as JSON
   dtctl get workflows -o json
+
+  # List only my workflows
+  dtctl get workflows --mine
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := LoadConfig()
@@ -70,8 +73,21 @@ Examples:
 			return printer.Print(wf)
 		}
 
-		// List all workflows
-		list, err := handler.List()
+		// List workflows with filters
+		mineOnly, _ := cmd.Flags().GetBool("mine")
+
+		filters := workflow.WorkflowFilters{}
+
+		// If --mine flag is set, get current user ID and filter by owner
+		if mineOnly {
+			userID, err := c.CurrentUserID()
+			if err != nil {
+				return fmt.Errorf("failed to get current user ID for --mine filter: %w", err)
+			}
+			filters.Owner = userID
+		}
+
+		list, err := handler.List(filters)
 		if err != nil {
 			return err
 		}
@@ -1807,6 +1823,7 @@ func init() {
 	deleteCmd.AddCommand(deleteEdgeConnectCmd)
 
 	getWorkflowExecutionsCmd.Flags().StringVarP(&workflowFilter, "workflow", "w", "", "Filter executions by workflow ID")
+	getWorkflowsCmd.Flags().Bool("mine", false, "Show only workflows owned by current user")
 	getDashboardsCmd.Flags().String("name", "", "Filter by dashboard name (partial match, case-insensitive)")
 	getDashboardsCmd.Flags().Bool("mine", false, "Show only dashboards owned by current user")
 	getNotebooksCmd.Flags().String("name", "", "Filter by notebook name (partial match, case-insensitive)")

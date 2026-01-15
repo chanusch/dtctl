@@ -36,13 +36,24 @@ type WorkflowList struct {
 	Results []Workflow `json:"results"`
 }
 
-// List retrieves all workflows
-func (h *Handler) List() (*WorkflowList, error) {
+// WorkflowFilters contains filter options for listing workflows
+type WorkflowFilters struct {
+	Owner string // Filter by owner ID (user ID)
+}
+
+// List retrieves workflows with optional filters
+func (h *Handler) List(filters WorkflowFilters) (*WorkflowList, error) {
 	var result WorkflowList
 
-	resp, err := h.client.HTTP().R().
-		SetResult(&result).
-		Get("/platform/automation/v1/workflows")
+	req := h.client.HTTP().R().
+		SetResult(&result)
+
+	// Add owner filter if specified (server-side filtering)
+	if filters.Owner != "" {
+		req.SetQueryParam("owner", filters.Owner)
+	}
+
+	resp, err := req.Get("/platform/automation/v1/workflows")
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflows: %w", err)

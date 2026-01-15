@@ -41,7 +41,7 @@ This document tracks the current implementation status of dtctl. For future plan
 
 | Resource | get | describe | create | delete | edit | apply | exec | logs | share | history | restore | --mine |
 |----------|-----|----------|--------|--------|------|-------|------|------|-------|---------|---------|--------|
-| **workflow** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | - |
+| **workflow** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ |
 | **execution** | ✅ | ✅ | - | - | - | - | - | ✅ | - | - | - | - |
 | **dashboard** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
 | **notebook** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
@@ -116,7 +116,6 @@ This document tracks the current implementation status of dtctl. For future plan
 ### Resource Gaps
 - [ ] Document trash (list/restore deleted)
 - [ ] Function describe
-- [ ] Workflow `--mine` filter
 
 ---
 

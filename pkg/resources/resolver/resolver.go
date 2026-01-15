@@ -96,7 +96,7 @@ func (r *Resolver) searchByName(resourceType ResourceType, name string) ([]Resou
 // searchWorkflows searches for workflows by name
 func (r *Resolver) searchWorkflows(name string) ([]Resource, error) {
 	handler := workflow.NewHandler(r.client)
-	list, err := handler.List()
+	list, err := handler.List(workflow.WorkflowFilters{})
 	if err != nil {
 		return nil, err
 	}
