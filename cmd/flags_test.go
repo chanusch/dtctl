@@ -588,6 +588,29 @@ func TestDescribeCommand(t *testing.T) {
 	}
 }
 
+// TestDescribeSLOCommand validates describe slo command exists
+func TestDescribeSLOCommand(t *testing.T) {
+	if describeSLOCmd == nil {
+		t.Fatal("describeSLOCmd is nil")
+	}
+
+	if describeSLOCmd.Name() != "slo" {
+		t.Errorf("describeSLOCmd.Name() = %q, want %q", describeSLOCmd.Name(), "slo")
+	}
+
+	// Verify it's registered under describe
+	found := false
+	for _, cmd := range describeCmd.Commands() {
+		if cmd.Name() == "slo" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("slo command not found under describe")
+	}
+}
+
 // TestHistoryCommand validates history command exists
 func TestHistoryCommand(t *testing.T) {
 	if historyCmd == nil {
