@@ -130,6 +130,121 @@ Dynatrace Platform APIs:
 - Base: `https://<env>.apps.dynatrace.com/platform/`
 - Docs: Each resource handler has API spec reference in comments
 
+## 🚨 **CRITICAL: Mandatory Safety Checks** 🚨
+
+**ALL commands that modify resources MUST include safety level checks.** This is non-negotiable for security.
+
+### Which Commands Need Safety Checks?
+
+✅ **ALWAYS ADD** safety checks to:
+- `create` - Creates new resources (`OperationCreate`)
+- `edit` - Modifies resources (`OperationUpdate`)
+- `apply` - Creates/updates resources (`OperationUpdate`)
+- `delete` - Deletes resources (`OperationDelete` or `OperationDeleteBucket`)
+- `update` - Updates resources (`OperationUpdate`)
+
+❌ **NEVER ADD** safety checks to:
+- `get` - Read-only operation
+- `describe` - Read-only operation
+- `query` - Read-only DQL execution
+- `logs` - Read-only log viewing
+- `history` - Read-only version history
+
+### Safety Check Pattern (REQUIRED)
+
+**Place immediately after `LoadConfig()` and BEFORE any client operations:**
+
+```go
+// Load configuration
+cfg, err := LoadConfig()
+if err != nil {
+    return err
+}
+
+// Safety check - REQUIRED for all mutating commands
+checker, err := NewSafetyChecker(cfg)
+if err != nil {
+    return err
+}
+if err := checker.CheckError(safety.OperationXXX, safety.OwnershipUnknown); err != nil {
+    return err
+}
+if checker.IsOverridden() {
+    fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationXXX))
+}
+
+// Now proceed with operation...
+c, err := NewClientFromConfig(cfg)
+// ...
+```
+
+### Operation Types
+
+Choose the correct operation type:
+
+| Operation | Use For | Example |
+|-----------|---------|---------|
+| `safety.OperationCreate` | Creating new resources | `create workflow`, `create dashboard` |
+| `safety.OperationUpdate` | Modifying existing resources | `edit workflow`, `apply` |
+| `safety.OperationDelete` | Deleting resources | `delete workflow`, `delete dashboard` |
+| `safety.OperationDeleteBucket` | Deleting buckets (data loss) | `delete bucket` |
+
+### Required Import
+
+Add to your command file:
+
+```go
+import (
+    // ... other imports
+    "github.com/dynatrace-oss/dtctl/pkg/safety"
+)
+```
+
+### Dry-Run Exception
+
+Skip safety checks in dry-run mode (no actual changes):
+
+```go
+if !dryRun {
+    // Safety check
+    checker, err := NewSafetyChecker(cfg)
+    // ... rest of safety check
+}
+```
+
+### Verification Checklist
+
+Before submitting code with a new/modified command:
+
+- [ ] Added `safety` package import
+- [ ] Safety check placed after `LoadConfig()` and before operations
+- [ ] Correct `Operation` type chosen
+- [ ] Override warning shown if `checker.IsOverridden()`
+- [ ] Code compiles: `go build .`
+- [ ] Tests pass: `go test ./pkg/safety/...`
+- [ ] Manually tested with `readonly` context (should block)
+- [ ] Manually tested with `--override-safety` (should warn)
+
+### Examples
+
+See these files for reference:
+- `cmd/edit.go` - Edit commands with safety checks
+- `cmd/create.go` - Create commands with safety checks  
+- `cmd/apply.go` - Apply command with safety check
+- `cmd/get.go` - Delete commands with safety checks
+
+### Why This Matters
+
+**Without safety checks**, users can accidentally modify production resources even when using `readonly` contexts. This defeats the entire purpose of context safety levels and can lead to:
+- Accidental production changes
+- Security violations
+- Data loss
+- Compliance issues
+
+**Historical Context**: In January 2026, we discovered that `edit`, `apply`, and `create` commands were missing safety checks, allowing modifications in `readonly` contexts. This was a critical security bug that could have led to serious production incidents.
+
+---
+
 ## Common Pitfalls
 
 ❌ **Don't** add query filters as CLI flags (e.g., `--filter-status`)  
@@ -140,6 +255,9 @@ Dynatrace Platform APIs:
 
 ❌ **Don't** print to stdout in library code  
 ✅ **Do** return data, let cmd/ handle output
+
+❌ **Don't** skip safety checks on mutating commands  
+✅ **Do** add safety checks to ALL create/edit/apply/delete/update commands
 
 ## Finding Examples
 
