@@ -388,3 +388,168 @@ func TestSaveTo_CreateDirectory(t *testing.T) {
 		}
 	}
 }
+
+// Safety Level Tests
+
+func TestSafetyLevel_IsValid(t *testing.T) {
+	tests := []struct {
+		level SafetyLevel
+		valid bool
+	}{
+		{SafetyLevelReadOnly, true},
+		{SafetyLevelReadWriteMine, true},
+		{SafetyLevelReadWriteAll, true},
+		{SafetyLevelDangerouslyUnrestricted, true},
+		{"", true}, // Empty is valid (uses default)
+		{"invalid", false},
+		{"read-only", false},  // Old name, no longer valid
+		{"read-write", false}, // Old name, no longer valid
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.level), func(t *testing.T) {
+			if got := tt.level.IsValid(); got != tt.valid {
+				t.Errorf("SafetyLevel(%q).IsValid() = %v, want %v", tt.level, got, tt.valid)
+			}
+		})
+	}
+}
+
+func TestSafetyLevel_String(t *testing.T) {
+	tests := []struct {
+		level SafetyLevel
+		want  string
+	}{
+		{SafetyLevelReadOnly, "readonly"},
+		{SafetyLevelReadWriteMine, "readwrite-mine"},
+		{SafetyLevelReadWriteAll, "readwrite-all"},
+		{SafetyLevelDangerouslyUnrestricted, "dangerously-unrestricted"},
+		{"", "readwrite-mine"}, // Empty returns default
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.level), func(t *testing.T) {
+			if got := tt.level.String(); got != tt.want {
+				t.Errorf("SafetyLevel(%q).String() = %v, want %v", tt.level, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidSafetyLevels(t *testing.T) {
+	levels := ValidSafetyLevels()
+
+	if len(levels) != 4 {
+		t.Errorf("ValidSafetyLevels() returned %d levels, want 4", len(levels))
+	}
+
+	// Verify all returned levels are valid
+	for _, level := range levels {
+		if !level.IsValid() {
+			t.Errorf("ValidSafetyLevels() returned invalid level: %s", level)
+		}
+	}
+
+	// Verify expected levels are present
+	expected := map[SafetyLevel]bool{
+		SafetyLevelReadOnly:                false,
+		SafetyLevelReadWriteMine:           false,
+		SafetyLevelReadWriteAll:            false,
+		SafetyLevelDangerouslyUnrestricted: false,
+	}
+	for _, level := range levels {
+		expected[level] = true
+	}
+	for level, found := range expected {
+		if !found {
+			t.Errorf("ValidSafetyLevels() missing level: %s", level)
+		}
+	}
+}
+
+func TestContext_GetEffectiveSafetyLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		level    SafetyLevel
+		expected SafetyLevel
+	}{
+		{"explicit readonly", SafetyLevelReadOnly, SafetyLevelReadOnly},
+		{"explicit readwrite-mine", SafetyLevelReadWriteMine, SafetyLevelReadWriteMine},
+		{"explicit readwrite-all", SafetyLevelReadWriteAll, SafetyLevelReadWriteAll},
+		{"explicit unrestricted", SafetyLevelDangerouslyUnrestricted, SafetyLevelDangerouslyUnrestricted},
+		{"empty defaults to readwrite-mine", "", SafetyLevelReadWriteMine},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &Context{
+				Environment: "https://test.dt.com",
+				SafetyLevel: tt.level,
+			}
+			if got := ctx.GetEffectiveSafetyLevel(); got != tt.expected {
+				t.Errorf("GetEffectiveSafetyLevel() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConfig_SetContextWithOptions(t *testing.T) {
+	cfg := NewConfig()
+
+	opts := &ContextOptions{
+		SafetyLevel: SafetyLevelReadOnly,
+		Description: "Production read-only access",
+	}
+
+	cfg.SetContextWithOptions("prod", "https://prod.dt.com", "prod-token", opts)
+
+	if len(cfg.Contexts) != 1 {
+		t.Fatalf("Expected 1 context, got %d", len(cfg.Contexts))
+	}
+
+	ctx := cfg.Contexts[0].Context
+	if ctx.SafetyLevel != SafetyLevelReadOnly {
+		t.Errorf("SafetyLevel = %v, want %v", ctx.SafetyLevel, SafetyLevelReadOnly)
+	}
+	if ctx.Description != "Production read-only access" {
+		t.Errorf("Description = %v, want 'Production read-only access'", ctx.Description)
+	}
+
+	// Update with new options
+	opts2 := &ContextOptions{
+		SafetyLevel: SafetyLevelReadWriteAll,
+	}
+	cfg.SetContextWithOptions("prod", "https://prod.dt.com", "", opts2)
+
+	if len(cfg.Contexts) != 1 {
+		t.Fatalf("Expected 1 context after update, got %d", len(cfg.Contexts))
+	}
+
+	ctx = cfg.Contexts[0].Context
+	if ctx.SafetyLevel != SafetyLevelReadWriteAll {
+		t.Errorf("Updated SafetyLevel = %v, want %v", ctx.SafetyLevel, SafetyLevelReadWriteAll)
+	}
+	// Description should remain unchanged when not provided in update
+	if ctx.Description != "Production read-only access" {
+		t.Errorf("Description should remain unchanged, got %v", ctx.Description)
+	}
+}
+
+func TestConfig_SetContextWithOptions_NilOpts(t *testing.T) {
+	cfg := NewConfig()
+
+	// SetContextWithOptions with nil opts should work like SetContext
+	cfg.SetContextWithOptions("test", "https://test.dt.com", "test-token", nil)
+
+	if len(cfg.Contexts) != 1 {
+		t.Fatalf("Expected 1 context, got %d", len(cfg.Contexts))
+	}
+
+	ctx := cfg.Contexts[0].Context
+	if ctx.SafetyLevel != "" {
+		t.Errorf("SafetyLevel should be empty (use default), got %v", ctx.SafetyLevel)
+	}
+	if ctx.GetEffectiveSafetyLevel() != SafetyLevelReadWriteMine {
+		t.Errorf("GetEffectiveSafetyLevel() = %v, want %v", ctx.GetEffectiveSafetyLevel(), SafetyLevelReadWriteMine)
+	}
+}

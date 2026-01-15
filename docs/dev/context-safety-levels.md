@@ -2,9 +2,20 @@
 
 ## Overview
 
-Context safety levels provide client-side protection against accidental destructive operations by binding safety constraints to connection contexts. This allows you to configure production contexts with strict safety while keeping development contexts permissive.
+Context safety levels provide **client-side** protection against accidental destructive operations by binding safety constraints to connection contexts. This allows you to configure production contexts with strict safety while keeping development contexts permissive.
 
 **Key Principle**: The safety level determines **what operations are allowed**. Confirmation behavior is **consistent** across all levels.
+
+> **Important: Client-Side Only**
+>
+> Safety levels are enforced by dtctl on your local machine. They are a convenience feature to prevent accidental mistakes, **not a security boundary**. A determined user can bypass them with `--override-safety` or by using the API directly.
+>
+> **For actual security, use proper API token scopes.** Configure your Dynatrace API tokens with the minimum required permissions. For example:
+> - Use read-only token scopes for monitoring contexts
+> - Avoid granting `storage:buckets:delete` unless absolutely necessary
+> - Create separate tokens for different use cases
+>
+> See the [Dynatrace documentation on access tokens](https://docs.dynatrace.com/docs/dynatrace-api/basics/access-tokens) for details on available scopes.
 
 ## Safety Levels
 
@@ -12,13 +23,12 @@ From safest to most permissive:
 
 | Level | Description | Use Case |
 |-------|-------------|----------|
-| `read-only` | No modifications allowed | Production monitoring, troubleshooting, read-only API tokens |
-| `read-write` | Can create/update/delete own resources only | Personal development, sandbox environments |
-| `collaborative` | Can modify resources owned by others | Team environments, shared staging |
-| `administrative` | Full resource management, no data operations | Production administration, most operations |
-| `unrestricted` | All operations including data deletion | Development, emergency recovery, bucket management |
+| `readonly` | No modifications allowed | Production monitoring, troubleshooting, read-only API tokens |
+| `readwrite-mine` | Can create/update/delete own resources only | Personal development, sandbox environments |
+| `readwrite-all` | Can modify all resources (no bucket deletion) | Team environments, shared staging, production administration |
+| `dangerously-unrestricted` | All operations including data deletion | Development, emergency recovery, bucket management |
 
-**Default**: If no safety level is specified, `read-write` is used.
+**Default**: If no safety level is specified, `readwrite-mine` is used.
 
 ## Configuration
 
@@ -30,14 +40,14 @@ contexts:
   context:
     environment: https://abc123.apps.dynatrace.com
     token-ref: prod-token
-    safety-level: administrative
+    safety-level: readwrite-all
     description: "Production environment - handle with care"
 
 - name: dev-sandbox
   context:
     environment: https://dev789.live.dynatrace.com
     token-ref: dev-token
-    safety-level: unrestricted
+    safety-level: dangerously-unrestricted
     description: "Personal dev environment - anything goes"
 ```
 
@@ -45,11 +55,10 @@ contexts:
 
 | Safety Level | Read | Create | Update Own | Update Shared | Delete Own | Delete Shared | Delete Bucket |
 |-------------|------|--------|------------|---------------|------------|---------------|---------------|
-| `read-only` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `read-write` | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
-| `collaborative` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `administrative` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `unrestricted` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `readonly` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `readwrite-mine` | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| `readwrite-all` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `dangerously-unrestricted` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 **Note**: "Own" vs "Shared" distinction requires ownership detection (see Implementation Notes).
 
@@ -108,7 +117,7 @@ dtctl delete bucket logs-bucket --dry-run
 dtctl config set-context prod-viewer \
   --environment https://prod.dynatrace.com \
   --token-ref readonly-token \
-  --safety-level read-only
+  --safety-level readonly
 
 dtctl config use-context prod-viewer
 
@@ -119,62 +128,61 @@ dtctl describe workflow deploy-pipeline
 
 # Blocked
 dtctl delete dashboard old-dash
-# Error: Context 'prod-viewer' (read-only) does not allow delete operations
+# Error: Context 'prod-viewer' (readonly) does not allow delete operations
 ```
 
-### Example 2: Production Administration
+### Example 2: Team Environment
 
 ```bash
-# Setup production admin
-dtctl config set-context prod-admin \
+# Setup team environment with full resource access
+dtctl config set-context prod-team \
   --environment https://prod.dynatrace.com \
-  --token-ref admin-token \
-  --safety-level administrative
+  --token-ref team-token \
+  --safety-level readwrite-all
 
-dtctl config use-context prod-admin
+dtctl config use-context prod-team
 
 # Allowed (with confirmation)
 dtctl delete dashboard old-dashboard
 dtctl delete workflow deprecated-workflow
 dtctl edit settings app-config
 
-# Blocked - requires unrestricted
+# Blocked - requires dangerously-unrestricted
 dtctl delete bucket temp-bucket
-# Error: Context 'prod-admin' (administrative) does not allow bucket deletion
-# Bucket operations require 'unrestricted' safety level
+# Error: Context 'prod-team' (readwrite-all) does not allow bucket deletion
+# Bucket operations require 'dangerously-unrestricted' safety level
 ```
 
-### Example 3: Team Staging Environment
+### Example 3: Personal Development
 
 ```bash
-# Setup shared staging access
-dtctl config set-context staging \
-  --environment https://staging.dynatrace.com \
-  --token-ref staging-token \
-  --safety-level collaborative
-
-dtctl config use-context staging
-
-# All team members can modify shared resources
-dtctl edit dashboard team-dashboard
-dtctl delete notebook experiment-01
-dtctl apply -f shared-workflow.yaml
-
-# Still protected from data loss
-dtctl delete bucket staging-logs
-# Error: Context 'staging' (collaborative) does not allow bucket deletion
-```
-
-### Example 4: Development Sandbox
-
-```bash
-# Setup unrestricted dev access
-dtctl config set-context dev \
+# Setup personal dev context (default safety level)
+dtctl config set-context my-dev \
   --environment https://dev.dynatrace.com \
   --token-ref dev-token \
-  --safety-level unrestricted
+  --safety-level readwrite-mine
 
-dtctl config use-context dev
+dtctl config use-context my-dev
+
+# Can modify own resources
+dtctl edit dashboard my-dashboard
+dtctl delete notebook my-experiment
+
+# Blocked from modifying others' resources
+dtctl delete dashboard team-dashboard
+# Error: Context 'my-dev' (readwrite-mine) does not allow modifying resources owned by others
+```
+
+### Example 4: Unrestricted Development
+
+```bash
+# Setup unrestricted dev access (use with caution!)
+dtctl config set-context dev-full \
+  --environment https://dev.dynatrace.com \
+  --token-ref dev-token \
+  --safety-level dangerously-unrestricted
+
+dtctl config use-context dev-full
 
 # Everything allowed (with appropriate confirmations)
 dtctl delete bucket test-bucket --confirm=test-bucket
@@ -189,7 +197,7 @@ Bypass safety level checks for a single operation:
 
 ```bash
 dtctl delete bucket logs-bucket --override-safety --confirm=logs-bucket
-# ⚠️  Safety check bypassed: bucket deletion requires 'unrestricted' level
+# ⚠️  Safety check bypassed: bucket deletion requires 'dangerously-unrestricted' level
 # Type the bucket name 'logs-bucket' to confirm: logs-bucket
 ```
 
@@ -220,7 +228,7 @@ dtctl config describe-context <name>
 
 ### Ownership Detection
 
-For `read-write` level (own vs shared resources):
+For `readwrite-mine` level (own vs shared resources):
 
 1. **Attempt 1**: Call `/platform/metadata/v1/user` to get current user ID
 2. **Attempt 2**: Extract user ID from JWT token (no API call)
@@ -249,11 +257,11 @@ Clear, actionable error messages:
 
 ```
 ❌ Operation not allowed:
-   Context: production (administrative)
-   Reason: Bucket deletion requires 'unrestricted' safety level
+   Context: production (readwrite-all)
+   Reason: Bucket deletion requires 'dangerously-unrestricted' safety level
 
 Suggestions:
-  • Switch to an unrestricted context
+  • Switch to a dangerously-unrestricted context
   • Use --override-safety (if you have permission)
   • Contact your administrator
 ```
@@ -266,7 +274,7 @@ Context safety provides a foundation for audit logging:
 {
   "timestamp": "2026-01-15T10:30:00Z",
   "context": "production",
-  "safety_level": "administrative",
+  "safety_level": "readwrite-all",
   "operation": "delete",
   "resource_type": "dashboard",
   "resource_id": "abc-123",
@@ -280,7 +288,7 @@ Context safety provides a foundation for audit logging:
 
 ### Existing Configurations
 
-Existing contexts without a safety level will default to `read-write`:
+Existing contexts without a safety level will default to `readwrite-mine`:
 
 ```yaml
 # Existing config (no changes needed)
@@ -289,7 +297,7 @@ contexts:
   context:
     environment: https://prod.dynatrace.com
     token-ref: prod-token
-    # safety-level defaults to: read-write
+    # safety-level defaults to: readwrite-mine
 ```
 
 ### Gradual Adoption

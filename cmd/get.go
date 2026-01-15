@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/dynatrace-oss/dtctl/pkg/prompt"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/analyzer"
@@ -17,6 +18,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/spf13/cobra"
 )
 
@@ -335,6 +337,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -398,6 +412,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -459,6 +485,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -686,6 +724,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -736,6 +786,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -1161,6 +1223,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -1214,6 +1288,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -1254,10 +1340,13 @@ var deleteBucketCmd = &cobra.Command{
 WARNING: This operation is irreversible and will delete all data in the bucket.
 
 Examples:
-  # Delete a bucket
+  # Delete a bucket (requires typing the name to confirm)
   dtctl delete bucket <bucket-name>
 
-  # Delete without confirmation
+  # Delete with confirmation flag (non-interactive)
+  dtctl delete bucket <bucket-name> --confirm=<bucket-name>
+
+  # Delete without confirmation (use with caution)
   dtctl delete bucket <bucket-name> -y
 `,
 	Args: cobra.ExactArgs(1),
@@ -1267,6 +1356,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check - bucket deletion requires unrestricted level
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDeleteBucket, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDeleteBucket))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -1282,15 +1383,24 @@ Examples:
 			return err
 		}
 
-		// Confirm deletion unless --force or --plain
+		// Handle confirmation for data deletion
+		confirmFlag, _ := cmd.Flags().GetString("confirm")
 		if !forceDelete && !plainMode {
-			displayName := b.DisplayName
-			if displayName == "" {
-				displayName = b.BucketName
-			}
-			if !prompt.ConfirmDeletion("bucket", displayName, bucketName) {
-				fmt.Println("Deletion cancelled")
-				return nil
+			// If --confirm flag provided, validate it matches the bucket name
+			if confirmFlag != "" {
+				if !prompt.ValidateConfirmFlag(confirmFlag, bucketName) {
+					return fmt.Errorf("confirmation value %q does not match bucket name %q", confirmFlag, bucketName)
+				}
+			} else {
+				// Interactive confirmation - require typing the bucket name
+				displayName := b.DisplayName
+				if displayName == "" {
+					displayName = b.BucketName
+				}
+				if !prompt.ConfirmDataDeletion("bucket", bucketName) {
+					fmt.Println("Deletion cancelled")
+					return nil
+				}
 			}
 		}
 
@@ -1326,6 +1436,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -1391,6 +1513,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationDelete, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationDelete))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -1712,6 +1846,7 @@ func init() {
 	deleteSLOCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteNotificationCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteBucketCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
+	deleteBucketCmd.Flags().String("confirm", "", "Confirm deletion by providing the bucket name (for non-interactive use)")
 	deleteLookupCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteSettingsCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")
 	deleteAppCmd.Flags().BoolVarP(&forceDelete, "yes", "y", false, "Skip confirmation prompt")

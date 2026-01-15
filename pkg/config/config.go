@@ -21,14 +21,63 @@ type Config struct {
 
 // NamedContext holds a context with its name
 type NamedContext struct {
-	Name    string  `yaml:"name"`
-	Context Context `yaml:"context"`
+	Name    string  `yaml:"name" table:"NAME"`
+	Context Context `yaml:"context" table:"-"`
+}
+
+// SafetyLevel defines the allowed operations for a context
+type SafetyLevel string
+
+const (
+	// SafetyLevelReadOnly allows only read operations
+	SafetyLevelReadOnly SafetyLevel = "readonly"
+	// SafetyLevelReadWriteMine allows create/update/delete of own resources only
+	SafetyLevelReadWriteMine SafetyLevel = "readwrite-mine"
+	// SafetyLevelReadWriteAll allows modification of all resources (no bucket deletion)
+	SafetyLevelReadWriteAll SafetyLevel = "readwrite-all"
+	// SafetyLevelDangerouslyUnrestricted allows all operations including data deletion
+	SafetyLevelDangerouslyUnrestricted SafetyLevel = "dangerously-unrestricted"
+
+	// DefaultSafetyLevel is used when no safety level is specified
+	DefaultSafetyLevel = SafetyLevelReadWriteMine
+)
+
+// ValidSafetyLevels returns all valid safety level values
+func ValidSafetyLevels() []SafetyLevel {
+	return []SafetyLevel{
+		SafetyLevelReadOnly,
+		SafetyLevelReadWriteMine,
+		SafetyLevelReadWriteAll,
+		SafetyLevelDangerouslyUnrestricted,
+	}
+}
+
+// IsValid checks if the safety level is valid
+func (s SafetyLevel) IsValid() bool {
+	switch s {
+	case SafetyLevelReadOnly, SafetyLevelReadWriteMine, SafetyLevelReadWriteAll,
+		SafetyLevelDangerouslyUnrestricted:
+		return true
+	case "":
+		return true // Empty is valid (defaults to readwrite-mine)
+	}
+	return false
+}
+
+// String returns the string representation of the safety level
+func (s SafetyLevel) String() string {
+	if s == "" {
+		return string(DefaultSafetyLevel)
+	}
+	return string(s)
 }
 
 // Context holds the connection information for a Dynatrace environment
 type Context struct {
-	Environment string `yaml:"environment"`
-	TokenRef    string `yaml:"token-ref"`
+	Environment string      `yaml:"environment" table:"ENVIRONMENT"`
+	TokenRef    string      `yaml:"token-ref" table:"TOKEN-REF"`
+	SafetyLevel SafetyLevel `yaml:"safety-level,omitempty" table:"SAFETY-LEVEL"`
+	Description string      `yaml:"description,omitempty" table:"DESCRIPTION,wide"`
 }
 
 // NamedToken holds a token with its name
@@ -157,25 +206,59 @@ func (c *Config) MustGetToken(tokenRef string) string {
 	return token
 }
 
+// ContextOptions holds optional fields for context configuration
+type ContextOptions struct {
+	SafetyLevel SafetyLevel
+	Description string
+}
+
 // SetContext creates or updates a context
 func (c *Config) SetContext(name, environment, tokenRef string) {
+	c.SetContextWithOptions(name, environment, tokenRef, nil)
+}
+
+// SetContextWithOptions creates or updates a context with optional fields
+func (c *Config) SetContextWithOptions(name, environment, tokenRef string, opts *ContextOptions) {
 	for i, nc := range c.Contexts {
 		if nc.Name == name {
 			c.Contexts[i].Context.Environment = environment
 			if tokenRef != "" {
 				c.Contexts[i].Context.TokenRef = tokenRef
 			}
+			if opts != nil {
+				if opts.SafetyLevel != "" {
+					c.Contexts[i].Context.SafetyLevel = opts.SafetyLevel
+				}
+				if opts.Description != "" {
+					c.Contexts[i].Context.Description = opts.Description
+				}
+			}
 			return
 		}
 	}
 
+	ctx := Context{
+		Environment: environment,
+		TokenRef:    tokenRef,
+	}
+	if opts != nil {
+		ctx.SafetyLevel = opts.SafetyLevel
+		ctx.Description = opts.Description
+	}
+
 	c.Contexts = append(c.Contexts, NamedContext{
-		Name: name,
-		Context: Context{
-			Environment: environment,
-			TokenRef:    tokenRef,
-		},
+		Name:    name,
+		Context: ctx,
 	})
+}
+
+// GetEffectiveSafetyLevel returns the effective safety level for a context
+// If no safety level is set, returns the default (readwrite-mine)
+func (c *Context) GetEffectiveSafetyLevel() SafetyLevel {
+	if c.SafetyLevel == "" {
+		return DefaultSafetyLevel
+	}
+	return c.SafetyLevel
 }
 
 // SetToken creates or updates a token.
