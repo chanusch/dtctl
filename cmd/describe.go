@@ -1009,7 +1009,12 @@ Examples:
 			fmt.Printf("Description: %s\n", s.Description)
 		}
 		if s.Version != "" {
-			fmt.Printf("Version:     %s\n", s.Version)
+			// Try to decode the version to show the modification timestamp
+			if decodedVersion, err := settings.DecodeVersion(s.Version); err == nil {
+				if decodedVersion.Timestamp != nil {
+					fmt.Printf("Modified:    %s\n", decodedVersion.Timestamp.Format("2006-01-02 15:04:05 UTC"))
+				}
+			}
 		}
 		if s.ExternalID != "" {
 			fmt.Printf("External ID: %s\n", s.ExternalID)
