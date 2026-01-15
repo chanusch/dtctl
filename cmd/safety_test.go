@@ -244,8 +244,8 @@ func TestSafetyChecker_OverrideBypassesChecks(t *testing.T) {
 	}
 }
 
-// TestSafetyChecker_ReadWriteMineBlocksShared tests readwrite-mine blocks shared resource operations
-func TestSafetyChecker_ReadWriteMineBlocksShared(t *testing.T) {
+// TestSafetyChecker_ReadWriteMineBlocksSharedAndUnknown tests readwrite-mine blocks shared and unknown ownership
+func TestSafetyChecker_ReadWriteMineBlocksSharedAndUnknown(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
@@ -280,7 +280,7 @@ func TestSafetyChecker_ReadWriteMineBlocksShared(t *testing.T) {
 		t.Fatalf("NewSafetyChecker() error = %v", err)
 	}
 
-	// Create should be allowed
+	// Create should be allowed (ownership doesn't matter for create)
 	t.Run("create allowed", func(t *testing.T) {
 		err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown)
 		if err != nil {
@@ -293,6 +293,14 @@ func TestSafetyChecker_ReadWriteMineBlocksShared(t *testing.T) {
 		err := checker.CheckError(safety.OperationUpdate, safety.OwnershipOwn)
 		if err != nil {
 			t.Errorf("Update own should be allowed, got: %v", err)
+		}
+	})
+
+	// Update unknown should be blocked (safer default - assume shared)
+	t.Run("update unknown blocked", func(t *testing.T) {
+		err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown)
+		if err == nil {
+			t.Error("Update with unknown ownership should be blocked")
 		}
 	})
 

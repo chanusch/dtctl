@@ -129,18 +129,24 @@ func (c *Checker) checkReadWriteMine(op Operation, ownership ResourceOwnership) 
 	case OperationRead, OperationCreate:
 		return CheckResult{Allowed: true}
 	case OperationUpdate, OperationDelete:
-		if ownership == OwnershipShared {
-			return CheckResult{
-				Allowed: false,
-				Reason:  fmt.Sprintf("Context '%s' (%s) does not allow modifying resources owned by others", c.contextName, c.safetyLevel),
-				Suggestions: []string{
-					"Switch to a 'readwrite-all' context",
-					"Use --override-safety to bypass this check",
-					"Use --assume-mine if you own this resource",
-				},
-			}
+		// Only allow if we KNOW the resource is owned by the user
+		// Unknown ownership is treated as shared (safer default)
+		if ownership == OwnershipOwn {
+			return CheckResult{Allowed: true}
 		}
-		return CheckResult{Allowed: true}
+		// Blocked: ownership is Unknown or Shared
+		reason := "does not allow modifying resources owned by others"
+		if ownership == OwnershipUnknown {
+			reason = "requires ownership verification before modifying resources"
+		}
+		return CheckResult{
+			Allowed: false,
+			Reason:  fmt.Sprintf("Context '%s' (%s) %s", c.contextName, c.safetyLevel, reason),
+			Suggestions: []string{
+				"Switch to a 'readwrite-all' context",
+				"Use --override-safety to bypass this check",
+			},
+		}
 	case OperationDeleteBucket:
 		return CheckResult{
 			Allowed: false,
@@ -223,4 +229,17 @@ func (e *SafetyError) Error() string {
 	}
 
 	return b.String()
+}
+
+// DetermineOwnership compares resource owner with current user ID to determine ownership.
+// Returns OwnershipOwn if they match, OwnershipShared if they don't, or OwnershipUnknown
+// if either value is empty.
+func DetermineOwnership(resourceOwnerID, currentUserID string) ResourceOwnership {
+	if resourceOwnerID == "" || currentUserID == "" {
+		return OwnershipUnknown
+	}
+	if resourceOwnerID == currentUserID {
+		return OwnershipOwn
+	}
+	return OwnershipShared
 }

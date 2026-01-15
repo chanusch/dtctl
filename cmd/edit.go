@@ -54,18 +54,6 @@ Examples:
 			return err
 		}
 
-		// Safety check
-		checker, err := NewSafetyChecker(cfg)
-		if err != nil {
-			return err
-		}
-		if err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown); err != nil {
-			return err
-		}
-		if checker.IsOverridden() {
-			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
-		}
-
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -79,6 +67,28 @@ Examples:
 		}
 
 		handler := workflow.NewHandler(c)
+
+		// Get workflow to check ownership
+		wf, err := handler.Get(workflowID)
+		if err != nil {
+			return err
+		}
+
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(wf.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
+		}
 
 		// Get the workflow as raw JSON
 		data, err := handler.GetRaw(workflowID)
@@ -207,18 +217,6 @@ Examples:
 			return err
 		}
 
-		// Safety check
-		checker, err := NewSafetyChecker(cfg)
-		if err != nil {
-			return err
-		}
-		if err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown); err != nil {
-			return err
-		}
-		if checker.IsOverridden() {
-			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
-		}
-
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -237,6 +235,22 @@ Examples:
 		doc, err := handler.Get(dashboardID)
 		if err != nil {
 			return err
+		}
+
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(doc.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
 		}
 
 		// Get format preference
@@ -366,18 +380,6 @@ Examples:
 			return err
 		}
 
-		// Safety check
-		checker, err := NewSafetyChecker(cfg)
-		if err != nil {
-			return err
-		}
-		if err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown); err != nil {
-			return err
-		}
-		if checker.IsOverridden() {
-			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
-		}
-
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -396,6 +398,22 @@ Examples:
 		doc, err := handler.Get(notebookID)
 		if err != nil {
 			return err
+		}
+
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(doc.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
 		}
 
 		// Get format preference

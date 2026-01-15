@@ -134,10 +134,10 @@ func TestChecker_ReadWriteMine(t *testing.T) {
 		{"read allowed", OperationRead, OwnershipUnknown, true},
 		{"create allowed", OperationCreate, OwnershipUnknown, true},
 		{"update own allowed", OperationUpdate, OwnershipOwn, true},
-		{"update unknown allowed", OperationUpdate, OwnershipUnknown, true},
+		{"update unknown blocked", OperationUpdate, OwnershipUnknown, false}, // Unknown ownership is blocked (safer)
 		{"update shared blocked", OperationUpdate, OwnershipShared, false},
 		{"delete own allowed", OperationDelete, OwnershipOwn, true},
-		{"delete unknown allowed", OperationDelete, OwnershipUnknown, true},
+		{"delete unknown blocked", OperationDelete, OwnershipUnknown, false}, // Unknown ownership is blocked (safer)
 		{"delete shared blocked", OperationDelete, OwnershipShared, false},
 		{"delete bucket blocked", OperationDeleteBucket, OwnershipUnknown, false},
 	}
@@ -343,6 +343,57 @@ func TestSafetyError_NoSuggestions(t *testing.T) {
 	}
 }
 
+// TestDetermineOwnership tests the DetermineOwnership helper function
+func TestDetermineOwnership(t *testing.T) {
+	tests := []struct {
+		name          string
+		resourceOwner string
+		currentUser   string
+		want          ResourceOwnership
+	}{
+		{
+			name:          "same user - own",
+			resourceOwner: "user-123",
+			currentUser:   "user-123",
+			want:          OwnershipOwn,
+		},
+		{
+			name:          "different user - shared",
+			resourceOwner: "user-123",
+			currentUser:   "user-456",
+			want:          OwnershipShared,
+		},
+		{
+			name:          "empty resource owner - unknown",
+			resourceOwner: "",
+			currentUser:   "user-123",
+			want:          OwnershipUnknown,
+		},
+		{
+			name:          "empty current user - unknown",
+			resourceOwner: "user-123",
+			currentUser:   "",
+			want:          OwnershipUnknown,
+		},
+		{
+			name:          "both empty - unknown",
+			resourceOwner: "",
+			currentUser:   "",
+			want:          OwnershipUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetermineOwnership(tt.resourceOwner, tt.currentUser)
+			if got != tt.want {
+				t.Errorf("DetermineOwnership(%q, %q) = %v, want %v",
+					tt.resourceOwner, tt.currentUser, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPermissionMatrix validates the complete permission matrix documented in context-safety-levels.md
 func TestPermissionMatrix(t *testing.T) {
 	// Permission matrix from documentation:
@@ -375,8 +426,10 @@ func TestPermissionMatrix(t *testing.T) {
 		{config.SafetyLevelReadWriteMine, OperationRead, OwnershipUnknown, true, "readwrite-mine: read"},
 		{config.SafetyLevelReadWriteMine, OperationCreate, OwnershipUnknown, true, "readwrite-mine: create"},
 		{config.SafetyLevelReadWriteMine, OperationUpdate, OwnershipOwn, true, "readwrite-mine: update own"},
+		{config.SafetyLevelReadWriteMine, OperationUpdate, OwnershipUnknown, false, "readwrite-mine: update unknown"}, // Unknown blocked (safer)
 		{config.SafetyLevelReadWriteMine, OperationUpdate, OwnershipShared, false, "readwrite-mine: update shared"},
 		{config.SafetyLevelReadWriteMine, OperationDelete, OwnershipOwn, true, "readwrite-mine: delete own"},
+		{config.SafetyLevelReadWriteMine, OperationDelete, OwnershipUnknown, false, "readwrite-mine: delete unknown"}, // Unknown blocked (safer)
 		{config.SafetyLevelReadWriteMine, OperationDelete, OwnershipShared, false, "readwrite-mine: delete shared"},
 		{config.SafetyLevelReadWriteMine, OperationDeleteBucket, OwnershipUnknown, false, "readwrite-mine: delete bucket"},
 
