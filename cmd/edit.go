@@ -11,6 +11,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/spf13/cobra"
 )
@@ -66,6 +67,28 @@ Examples:
 		}
 
 		handler := workflow.NewHandler(c)
+
+		// Get workflow to check ownership
+		wf, err := handler.Get(workflowID)
+		if err != nil {
+			return err
+		}
+
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(wf.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
+		}
 
 		// Get the workflow as raw JSON
 		data, err := handler.GetRaw(workflowID)
@@ -212,6 +235,22 @@ Examples:
 		doc, err := handler.Get(dashboardID)
 		if err != nil {
 			return err
+		}
+
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(doc.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
 		}
 
 		// Get format preference
@@ -361,6 +400,22 @@ Examples:
 			return err
 		}
 
+		// Determine ownership for safety check
+		currentUserID, _ := c.CurrentUserID() // Ignore error - will be empty string
+		ownership := safety.DetermineOwnership(doc.Owner, currentUserID)
+
+		// Safety check with actual ownership
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, ownership); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
+		}
+
 		// Get format preference
 		editFormat, _ := cmd.Flags().GetString("format")
 		var editData []byte
@@ -492,6 +547,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
 		}
 
 		c, err := NewClientFromConfig(cfg)

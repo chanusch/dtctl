@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/dynatrace-oss/dtctl/pkg/apply"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/spf13/cobra"
 )
@@ -93,6 +94,21 @@ that contains the dashboard ID. The 'create' command always creates new resource
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check - apply can create or update, so check for both operations
+		// Use OperationUpdate since it's more restrictive (covers both create and update)
+		if !dryRun {
+			checker, err := NewSafetyChecker(cfg)
+			if err != nil {
+				return err
+			}
+			if err := checker.CheckError(safety.OperationUpdate, safety.OwnershipUnknown); err != nil {
+				return err
+			}
+			if checker.IsOverridden() {
+				fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationUpdate))
+			}
 		}
 
 		c, err := NewClientFromConfig(cfg)

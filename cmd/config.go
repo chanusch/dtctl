@@ -29,18 +29,53 @@ var configViewCmd = &cobra.Command{
 	},
 }
 
+// ContextListItem is a flattened view of a context for table display
+type ContextListItem struct {
+	Current     string `table:"CURRENT"`
+	Name        string `table:"NAME"`
+	Environment string `table:"ENVIRONMENT"`
+	SafetyLevel string `table:"SAFETY-LEVEL"`
+	Description string `table:"DESCRIPTION,wide"`
+}
+
 // configGetContextsCmd lists all contexts
 var configGetContextsCmd = &cobra.Command{
 	Use:   "get-contexts",
 	Short: "List all available contexts",
+	Long: `List all available contexts with their safety levels.
+
+Examples:
+  # List contexts
+  dtctl config get-contexts
+
+  # List contexts with descriptions
+  dtctl config get-contexts -o wide
+`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
 
+		// Create flattened list for display
+		var items []ContextListItem
+		for _, nc := range cfg.Contexts {
+			current := ""
+			if nc.Name == cfg.CurrentContext {
+				current = "*"
+			}
+			safetyLevel := nc.Context.SafetyLevel.String()
+			items = append(items, ContextListItem{
+				Current:     current,
+				Name:        nc.Name,
+				Environment: nc.Context.Environment,
+				SafetyLevel: safetyLevel,
+				Description: nc.Context.Description,
+			})
+		}
+
 		printer := NewPrinter()
-		return printer.PrintList(cfg.Contexts)
+		return printer.PrintList(items)
 	},
 }
 
@@ -100,16 +135,39 @@ var configUseContextCmd = &cobra.Command{
 var configSetContextCmd = &cobra.Command{
 	Use:   "set-context <context-name>",
 	Short: "Set a context entry in the config",
-	Args:  cobra.ExactArgs(1),
+	Long: `Create or update a context with connection and safety settings.
+
+Safety Levels (from safest to most permissive):
+  readonly                  - No modifications allowed (production monitoring)
+  readwrite-mine            - Create/update/delete own resources only
+  readwrite-all             - Modify all resources, no bucket deletion (default)
+  dangerously-unrestricted  - All operations including bucket deletion
+
+Note: Safety levels are client-side checks to prevent accidental mistakes.
+For actual security, configure your API token with appropriate scopes.
+
+Examples:
+  # Create a production read-only context
+  dtctl config set-context prod-viewer \
+    --environment https://prod.dynatrace.com \
+    --token-ref prod-token \
+    --safety-level readonly
+
+  # Create a context for team collaboration
+  dtctl config set-context staging \
+    --environment https://staging.dynatrace.com \
+    --token-ref staging-token \
+    --safety-level readwrite-all \
+    --description "Staging environment"
+`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		contextName := args[0]
 
 		environment, _ := cmd.Flags().GetString("environment")
 		tokenRef, _ := cmd.Flags().GetString("token-ref")
-
-		if environment == "" {
-			return fmt.Errorf("--environment is required")
-		}
+		safetyLevel, _ := cmd.Flags().GetString("safety-level")
+		description, _ := cmd.Flags().GetString("description")
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -117,7 +175,37 @@ var configSetContextCmd = &cobra.Command{
 			cfg = config.NewConfig()
 		}
 
-		cfg.SetContext(contextName, environment, tokenRef)
+		// Check if this is an update to an existing context
+		isUpdate := false
+		for _, nc := range cfg.Contexts {
+			if nc.Name == contextName {
+				isUpdate = true
+				if environment == "" {
+					environment = nc.Context.Environment
+				}
+				break
+			}
+		}
+
+		// Require environment for new contexts
+		if !isUpdate && environment == "" {
+			return fmt.Errorf("--environment is required for new contexts")
+		}
+
+		// Validate safety level if provided
+		if safetyLevel != "" {
+			level := config.SafetyLevel(safetyLevel)
+			if !level.IsValid() {
+				return fmt.Errorf("invalid safety level %q. Valid values: readonly, readwrite-mine, readwrite-all, dangerously-unrestricted", safetyLevel)
+			}
+		}
+
+		opts := &config.ContextOptions{
+			SafetyLevel: config.SafetyLevel(safetyLevel),
+			Description: description,
+		}
+
+		cfg.SetContextWithOptions(contextName, environment, tokenRef, opts)
 
 		// Set as current context if it's the first one
 		if len(cfg.Contexts) == 1 || cfg.CurrentContext == "" {
@@ -244,6 +332,74 @@ After migration, tokens are removed from the config file and stored securely.`,
 	},
 }
 
+// configDescribeContextCmd shows detailed info about a context
+var configDescribeContextCmd = &cobra.Command{
+	Use:     "describe-context <context-name>",
+	Aliases: []string{"desc-ctx"},
+	Short:   "Show detailed information about a context",
+	Long: `Show detailed information about a context including its safety level and settings.
+
+Examples:
+  # Describe the current context
+  dtctl config describe-context $(dtctl config current-context)
+
+  # Describe a specific context
+  dtctl config describe-context production
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		contextName := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		// Find the context
+		var found *config.NamedContext
+		for i := range cfg.Contexts {
+			if cfg.Contexts[i].Name == contextName {
+				found = &cfg.Contexts[i]
+				break
+			}
+		}
+
+		if found == nil {
+			return fmt.Errorf("context %q not found", contextName)
+		}
+
+		// Print context details
+		isCurrent := found.Name == cfg.CurrentContext
+		currentMark := ""
+		if isCurrent {
+			currentMark = " (current)"
+		}
+
+		fmt.Printf("Name:         %s%s\n", found.Name, currentMark)
+		fmt.Printf("Environment:  %s\n", found.Context.Environment)
+		fmt.Printf("Token-Ref:    %s\n", found.Context.TokenRef)
+		fmt.Printf("Safety Level: %s\n", found.Context.GetEffectiveSafetyLevel())
+
+		// Show safety level description
+		switch found.Context.GetEffectiveSafetyLevel() {
+		case config.SafetyLevelReadOnly:
+			fmt.Printf("              (No modifications allowed)\n")
+		case config.SafetyLevelReadWriteMine:
+			fmt.Printf("              (Create/update/delete own resources)\n")
+		case config.SafetyLevelReadWriteAll:
+			fmt.Printf("              (Modify all resources, no bucket deletion)\n")
+		case config.SafetyLevelDangerouslyUnrestricted:
+			fmt.Printf("              (All operations including bucket deletion)\n")
+		}
+
+		if found.Context.Description != "" {
+			fmt.Printf("Description:  %s\n", found.Context.Description)
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(configCmd)
 
@@ -255,10 +411,13 @@ func init() {
 	configCmd.AddCommand(configSetContextCmd)
 	configCmd.AddCommand(configSetCredentialsCmd)
 	configCmd.AddCommand(configMigrateTokensCmd)
+	configCmd.AddCommand(configDescribeContextCmd)
 
 	// Flags for set-context
 	configSetContextCmd.Flags().String("environment", "", "environment URL")
 	configSetContextCmd.Flags().String("token-ref", "", "token reference name")
+	configSetContextCmd.Flags().String("safety-level", "", "safety level (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)")
+	configSetContextCmd.Flags().String("description", "", "human-readable description for this context")
 
 	// Flags for set-credentials
 	configSetCredentialsCmd.Flags().String("token", "", "API token")

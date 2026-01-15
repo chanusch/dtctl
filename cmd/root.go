@@ -8,6 +8,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/suggest"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -15,13 +16,14 @@ import (
 )
 
 var (
-	cfgFile      string
-	contextName  string
-	outputFormat string
-	verbosity    int
-	dryRun       bool
-	plainMode    bool
-	chunkSize    int64
+	cfgFile        string
+	contextName    string
+	outputFormat   string
+	verbosity      int
+	dryRun         bool
+	plainMode      bool
+	chunkSize      int64
+	overrideSafety bool
 )
 
 // rootCmd represents the base command
@@ -170,6 +172,23 @@ func GetChunkSize() int64 {
 	return chunkSize
 }
 
+// GetOverrideSafety returns the current override safety setting
+func GetOverrideSafety() bool {
+	return overrideSafety
+}
+
+// NewSafetyChecker creates a new safety checker for the current context
+func NewSafetyChecker(cfg *config.Config) (*safety.Checker, error) {
+	ctx, err := cfg.CurrentContextObj()
+	if err != nil {
+		return nil, err
+	}
+
+	checker := safety.NewChecker(cfg.CurrentContext, ctx)
+	checker.SetOverride(overrideSafety)
+	return checker, nil
+}
+
 // NewPrinter creates a new printer respecting plain mode setting
 func NewPrinter() output.Printer {
 	return output.NewPrinterWithOptions(outputFormat, os.Stdout, plainMode)
@@ -220,6 +239,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "print what would be done without doing it")
 	rootCmd.PersistentFlags().BoolVar(&plainMode, "plain", false, "plain output for machine processing (no colors, no interactive prompts)")
 	rootCmd.PersistentFlags().Int64Var(&chunkSize, "chunk-size", 500, "Return large lists in chunks rather than all at once. Pass 0 to disable.")
+	rootCmd.PersistentFlags().BoolVar(&overrideSafety, "override-safety", false, "bypass safety level checks for this operation")
 
 	// Bind flags to viper
 	_ = viper.BindPFlag("context", rootCmd.PersistentFlags().Lookup("context"))

@@ -13,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
+	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
 	"github.com/spf13/cobra"
@@ -87,6 +88,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -273,6 +286,18 @@ func createDocumentRunE(docType string) func(cmd *cobra.Command, args []string) 
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -506,6 +531,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -647,6 +684,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -744,6 +793,18 @@ Examples:
 			return err
 		}
 
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
+		}
+
 		c, err := NewClientFromConfig(cfg)
 		if err != nil {
 			return err
@@ -831,6 +892,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
 		}
 
 		c, err := NewClientFromConfig(cfg)
@@ -932,6 +1005,18 @@ Examples:
 		cfg, err := LoadConfig()
 		if err != nil {
 			return err
+		}
+
+		// Safety check
+		checker, err := NewSafetyChecker(cfg)
+		if err != nil {
+			return err
+		}
+		if err := checker.CheckError(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
+			return err
+		}
+		if checker.IsOverridden() {
+			fmt.Fprintln(os.Stderr, "⚠️ ", checker.OverrideWarning(safety.OperationCreate))
 		}
 
 		c, err := NewClientFromConfig(cfg)
