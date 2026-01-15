@@ -104,8 +104,8 @@ func (c *Checker) Check(op Operation, ownership ResourceOwnership) CheckResult {
 	case config.SafetyLevelDangerouslyUnrestricted:
 		return CheckResult{Allowed: true}
 	default:
-		// Unknown level, default to readwrite-mine behavior
-		return c.checkReadWriteMine(op, ownership)
+		// Unknown level, default to readwrite-all behavior (same as DefaultSafetyLevel)
+		return c.checkReadWriteAll(op)
 	}
 }
 

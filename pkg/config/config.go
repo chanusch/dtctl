@@ -38,8 +38,11 @@ const (
 	// SafetyLevelDangerouslyUnrestricted allows all operations including data deletion
 	SafetyLevelDangerouslyUnrestricted SafetyLevel = "dangerously-unrestricted"
 
-	// DefaultSafetyLevel is used when no safety level is specified
-	DefaultSafetyLevel = SafetyLevelReadWriteMine
+	// DefaultSafetyLevel is used when no safety level is specified.
+	// We use readwrite-all as default to avoid breaking existing workflows.
+	// This allows all operations except bucket deletion, which is the most
+	// common use case and matches pre-safety-level behavior.
+	DefaultSafetyLevel = SafetyLevelReadWriteAll
 )
 
 // ValidSafetyLevels returns all valid safety level values
@@ -59,7 +62,7 @@ func (s SafetyLevel) IsValid() bool {
 		SafetyLevelDangerouslyUnrestricted:
 		return true
 	case "":
-		return true // Empty is valid (defaults to readwrite-mine)
+		return true // Empty is valid (defaults to readwrite-all)
 	}
 	return false
 }
@@ -253,7 +256,7 @@ func (c *Config) SetContextWithOptions(name, environment, tokenRef string, opts 
 }
 
 // GetEffectiveSafetyLevel returns the effective safety level for a context
-// If no safety level is set, returns the default (readwrite-mine)
+// If no safety level is set, returns the default (readwrite-all)
 func (c *Context) GetEffectiveSafetyLevel() SafetyLevel {
 	if c.SafetyLevel == "" {
 		return DefaultSafetyLevel

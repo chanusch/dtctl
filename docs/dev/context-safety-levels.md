@@ -28,7 +28,7 @@ From safest to most permissive:
 | `readwrite-all` | Can modify all resources (no bucket deletion) | Team environments, shared staging, production administration |
 | `dangerously-unrestricted` | All operations including data deletion | Development, emergency recovery, bucket management |
 
-**Default**: If no safety level is specified, `readwrite-mine` is used.
+**Default**: If no safety level is specified, `readwrite-all` is used. This matches pre-safety-level behavior and avoids breaking existing workflows.
 
 ## Configuration
 
@@ -288,7 +288,7 @@ Context safety provides a foundation for audit logging:
 
 ### Existing Configurations
 
-Existing contexts without a safety level will default to `readwrite-mine`:
+Existing contexts without a safety level will default to `readwrite-all`:
 
 ```yaml
 # Existing config (no changes needed)
@@ -297,7 +297,7 @@ contexts:
   context:
     environment: https://prod.dynatrace.com
     token-ref: prod-token
-    # safety-level defaults to: readwrite-mine
+    # safety-level defaults to: readwrite-all
 ```
 
 ### Gradual Adoption

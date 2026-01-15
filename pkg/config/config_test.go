@@ -424,7 +424,7 @@ func TestSafetyLevel_String(t *testing.T) {
 		{SafetyLevelReadWriteMine, "readwrite-mine"},
 		{SafetyLevelReadWriteAll, "readwrite-all"},
 		{SafetyLevelDangerouslyUnrestricted, "dangerously-unrestricted"},
-		{"", "readwrite-mine"}, // Empty returns default
+		{"", "readwrite-all"}, // Empty returns default
 	}
 
 	for _, tt := range tests {
@@ -477,7 +477,7 @@ func TestContext_GetEffectiveSafetyLevel(t *testing.T) {
 		{"explicit readwrite-mine", SafetyLevelReadWriteMine, SafetyLevelReadWriteMine},
 		{"explicit readwrite-all", SafetyLevelReadWriteAll, SafetyLevelReadWriteAll},
 		{"explicit unrestricted", SafetyLevelDangerouslyUnrestricted, SafetyLevelDangerouslyUnrestricted},
-		{"empty defaults to readwrite-mine", "", SafetyLevelReadWriteMine},
+		{"empty defaults to readwrite-all", "", SafetyLevelReadWriteAll},
 	}
 
 	for _, tt := range tests {
@@ -549,7 +549,7 @@ func TestConfig_SetContextWithOptions_NilOpts(t *testing.T) {
 	if ctx.SafetyLevel != "" {
 		t.Errorf("SafetyLevel should be empty (use default), got %v", ctx.SafetyLevel)
 	}
-	if ctx.GetEffectiveSafetyLevel() != SafetyLevelReadWriteMine {
-		t.Errorf("GetEffectiveSafetyLevel() = %v, want %v", ctx.GetEffectiveSafetyLevel(), SafetyLevelReadWriteMine)
+	if ctx.GetEffectiveSafetyLevel() != SafetyLevelReadWriteAll {
+		t.Errorf("GetEffectiveSafetyLevel() = %v, want %v", ctx.GetEffectiveSafetyLevel(), SafetyLevelReadWriteAll)
 	}
 }

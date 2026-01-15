@@ -1377,9 +1377,8 @@ Examples:
 
 		handler := bucket.NewHandler(c)
 
-		// Get bucket for confirmation
-		b, err := handler.Get(bucketName)
-		if err != nil {
+		// Verify bucket exists before prompting for confirmation
+		if _, err := handler.Get(bucketName); err != nil {
 			return err
 		}
 
@@ -1393,10 +1392,6 @@ Examples:
 				}
 			} else {
 				// Interactive confirmation - require typing the bucket name
-				displayName := b.DisplayName
-				if displayName == "" {
-					displayName = b.BucketName
-				}
 				if !prompt.ConfirmDataDeletion("bucket", bucketName) {
 					fmt.Println("Deletion cancelled")
 					return nil

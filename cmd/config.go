@@ -139,8 +139,8 @@ var configSetContextCmd = &cobra.Command{
 
 Safety Levels (from safest to most permissive):
   readonly                  - No modifications allowed (production monitoring)
-  readwrite-mine            - Create/update/delete own resources only (default)
-  readwrite-all             - Modify all resources (team environments, no bucket deletion)
+  readwrite-mine            - Create/update/delete own resources only
+  readwrite-all             - Modify all resources, no bucket deletion (default)
   dangerously-unrestricted  - All operations including bucket deletion
 
 Note: Safety levels are client-side checks to prevent accidental mistakes.

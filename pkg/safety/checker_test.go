@@ -34,8 +34,8 @@ func TestNewChecker_DefaultSafetyLevel(t *testing.T) {
 
 	checker := NewChecker("test-context", ctx)
 
-	if checker.SafetyLevel() != config.SafetyLevelReadWriteMine {
-		t.Errorf("SafetyLevel() = %v, want %v (default)", checker.SafetyLevel(), config.SafetyLevelReadWriteMine)
+	if checker.SafetyLevel() != config.SafetyLevelReadWriteAll {
+		t.Errorf("SafetyLevel() = %v, want %v (default)", checker.SafetyLevel(), config.SafetyLevelReadWriteAll)
 	}
 }
 
@@ -210,19 +210,19 @@ func TestChecker_DangerouslyUnrestricted(t *testing.T) {
 	}
 }
 
-// TestChecker_UnknownLevel tests behavior with unknown safety level (should default to readwrite-mine)
+// TestChecker_UnknownLevel tests behavior with unknown safety level (should default to readwrite-all)
 func TestChecker_UnknownLevel(t *testing.T) {
 	checker := NewCheckerWithLevel("unknown", config.SafetyLevel("unknown-level"))
 
-	// Should behave like readwrite-mine
+	// Should behave like readwrite-all (the default)
 	result := checker.Check(OperationRead, OwnershipUnknown)
 	if !result.Allowed {
 		t.Error("Unknown level should allow read operations")
 	}
 
 	result = checker.Check(OperationUpdate, OwnershipShared)
-	if result.Allowed {
-		t.Error("Unknown level should block updating shared resources (defaults to readwrite-mine)")
+	if !result.Allowed {
+		t.Error("Unknown level should allow updating shared resources (defaults to readwrite-all)")
 	}
 
 	result = checker.Check(OperationDeleteBucket, OwnershipUnknown)
