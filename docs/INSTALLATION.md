@@ -18,6 +18,9 @@ This guide covers installing dtctl on your system.
    # Make it executable
    chmod +x dtctl
    
+   # macOS only: Remove quarantine attribute (see Troubleshooting section for details)
+   sudo xattr -r -d com.apple.quarantine dtctl
+   
    # Move to a directory in your PATH
    sudo mv dtctl /usr/local/bin/
    
@@ -290,6 +293,51 @@ Make the binary executable:
 ```bash
 chmod +x bin/dtctl
 ```
+
+### macOS: "Apple could not verify dtctl is free of malware"
+
+When downloading pre-built binaries on macOS, you may see this security warning:
+
+```
+"dtctl" cannot be opened because Apple cannot verify that it is free of malware.
+```
+
+This is expected behavior for unsigned binaries. The dtctl releases are not code-signed with an Apple Developer ID certificate, which is common for open-source CLI tools.
+
+**Option 1: Remove quarantine attribute (Recommended)**
+
+```bash
+# Remove the quarantine flag
+sudo xattr -r -d com.apple.quarantine dtctl
+
+# Then make it executable
+chmod +x dtctl
+```
+
+**Option 2: Allow via System Settings**
+
+1. Try to run `./dtctl`
+2. When the warning appears, click "Cancel"
+3. Open **System Settings > Privacy & Security**
+4. Scroll to the Security section at the bottom
+5. Click **"Allow Anyway"** next to the dtctl message
+6. Try running `./dtctl` again and click **"Open"** when prompted
+
+**Why does this happen?**
+
+macOS Gatekeeper adds a `com.apple.quarantine` extended attribute to files downloaded from the internet. When you try to execute them, macOS checks for:
+- Code signing by a registered Apple Developer ID
+- Notarization by Apple (malware scanning)
+
+Since dtctl is an open-source project and not signed/notarized, macOS blocks it by default. The workarounds above tell macOS you trust this binary.
+
+**Is this safe?**
+
+Yes, if you downloaded dtctl from the official [GitHub releases page](https://github.com/dynatrace-oss/dtctl/releases). Always verify:
+- You're downloading from `github.com/dynatrace-oss/dtctl`
+- The checksum matches (see `checksums.txt` in the release)
+
+**Note**: If you build from source locally, this issue doesn't occur since the binary isn't quarantined.
 
 ### Build fails
 
