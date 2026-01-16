@@ -400,6 +400,68 @@ Examples:
 	},
 }
 
+// configDeleteContextCmd deletes a context from the configuration
+var configDeleteContextCmd = &cobra.Command{
+	Use:     "delete-context <context-name>",
+	Aliases: []string{"rm-ctx"},
+	Short:   "Delete a context from the config",
+	Long: `Delete a context from the configuration.
+
+If the deleted context is the current context, the current-context will be cleared.
+You will need to use 'dtctl config use-context' to set a new current context.
+
+Note: This does not delete the associated credentials. Use 'dtctl config set-credentials'
+to manage credentials separately.
+
+Examples:
+  # Delete a context
+  dtctl config delete-context old-env
+
+  # Delete the staging context
+  dtctl config delete-context staging
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		contextName := args[0]
+
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		// Check if context exists before deleting
+		found := false
+		for _, nc := range cfg.Contexts {
+			if nc.Name == contextName {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return fmt.Errorf("context %q not found", contextName)
+		}
+
+		// Delete the context
+		if err := cfg.DeleteContext(contextName); err != nil {
+			return err
+		}
+
+		// Clear current context if we just deleted it
+		if cfg.CurrentContext == contextName {
+			cfg.CurrentContext = ""
+			fmt.Printf("Warning: deleted the current context. Use 'dtctl config use-context' to set a new one.\n")
+		}
+
+		if err := cfg.Save(); err != nil {
+			return err
+		}
+
+		fmt.Printf("Context %q deleted\n", contextName)
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(configCmd)
 
@@ -412,6 +474,7 @@ func init() {
 	configCmd.AddCommand(configSetCredentialsCmd)
 	configCmd.AddCommand(configMigrateTokensCmd)
 	configCmd.AddCommand(configDescribeContextCmd)
+	configCmd.AddCommand(configDeleteContextCmd)
 
 	// Flags for set-context
 	configSetContextCmd.Flags().String("environment", "", "environment URL")

@@ -264,6 +264,18 @@ func (c *Context) GetEffectiveSafetyLevel() SafetyLevel {
 	return c.SafetyLevel
 }
 
+// DeleteContext removes a context by name.
+// Returns an error if the context is not found.
+func (c *Config) DeleteContext(name string) error {
+	for i, nc := range c.Contexts {
+		if nc.Name == name {
+			c.Contexts = append(c.Contexts[:i], c.Contexts[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("context %q not found", name)
+}
+
 // SetToken creates or updates a token.
 // If keyring is available, the token is stored securely in the OS keyring
 // and only a reference is kept in the config file.
