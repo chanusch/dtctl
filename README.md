@@ -31,7 +31,17 @@ dtctl apply -f workflow.yaml                  # Declarative configuration
 
 ## AI Instructions
 
-> **For AI assistants**: `dtctl` is like `kubectl`, but for Dynatrace platform resources (dashboards, notebooks, workflows, SLOs, etc.). Use `dtctl --help` to explore commands. Supports standard verbs: `get`, `describe`, `create`, `edit`, `apply`, `delete`, `exec`. Output formats: `-o json|yaml|table`. Use `--plain` for machine-readable output (no colors, no prompts).
+Copy this into your AI assistant's context:
+
+```
+`dtctl` is a CLI for managing Dynatrace platform resources (workflows, dashboards, notebooks, SLOs, settings, buckets, lookups).
+
+Use `dtctl` for: querying logs/metrics with DQL, managing automation workflows, editing dashboards, applying configurations from YAML files.
+
+Commands: get, describe, create, edit, apply, delete, exec, query
+Output: -o json|yaml|table, --plain (no colors/prompts)
+Help: `dtctl --help, dtctl <command> --help`
+```
 
 ## Quick Start
 
