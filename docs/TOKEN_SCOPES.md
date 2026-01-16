@@ -15,242 +15,310 @@ This document lists the Dynatrace platform token scopes required for each safety
 | `readwrite-all` | Team environments, administration | Standard token |
 | `dangerously-unrestricted` | Dev environments, bucket management | Full access token |
 
----
+For creating platform tokens, see [Dynatrace Platform Tokens documentation](https://docs.dynatrace.com/docs/manage/identity-access-management/access-tokens-and-oauth-clients/platform-tokens).
 
-## Scopes for `readonly`
+## Recommended Scopes by Safety Level
 
-Use this for production monitoring contexts where no modifications should be possible.
+### `readonly`
+
+Read-only access for production monitoring and troubleshooting.
 
 ```
-automation:workflows:read,
-automation:calendars:read,
-automation:rules:read,
 document:documents:read,
-document:trash.documents:read,
+automation:workflows:read,
+slo:read,
+settings:schemas:read,
+settings:objects:read,
 storage:logs:read,
 storage:events:read,
 storage:metrics:read,
 storage:spans:read,
+storage:bizevents:read,
 storage:entities:read,
+storage:smartscape:read,
+storage:system:read,
+storage:security.events:read,
+storage:application.snapshots:read,
+storage:user.events:read,
+storage:user.sessions:read,
+storage:user.replays:read,
 storage:buckets:read,
+storage:bucket-definitions:read,
+storage:fieldsets:read,
+storage:fieldset-definitions:read,
 storage:files:read,
-slo:read,
-settings:objects:read,
+storage:filter-segments:read,
+iam:users:read,
+iam:groups:read,
+notifications:read,
+vulnerabilities:read,
 davis:analyzers:read,
 app-engine:apps:run
 ```
 
-**Capabilities**: List and view all resources, run DQL queries, view SLO status.
+### `readwrite-mine`
 
----
-
-## Scopes for `readwrite-mine`
-
-Use this for personal development where you create and manage your own resources.
+Create and manage your own resources in sandbox/development environments.
 
 ```
-automation:workflows:read,
-automation:workflows:write,
-automation:workflows:run,
-automation:calendars:read,
-automation:rules:read,
 document:documents:read,
 document:documents:write,
-document:documents:delete,
-document:trash.documents:read,
-document:trash.documents:delete,
+automation:workflows:read,
+automation:workflows:write,
+automation:workflows:execute,
+slo:read,
+slo:write,
+settings:schemas:read,
+settings:objects:read,
+settings:objects:write,
 storage:logs:read,
 storage:events:read,
 storage:metrics:read,
 storage:spans:read,
+storage:bizevents:read,
 storage:entities:read,
+storage:smartscape:read,
+storage:system:read,
+storage:security.events:read,
 storage:buckets:read,
+storage:bucket-definitions:read,
 storage:files:read,
 storage:files:write,
-slo:read,
-slo:write,
-settings:objects:read,
-settings:objects:write,
+storage:filter-segments:read,
+storage:filter-segments:write,
 davis:analyzers:read,
 davis:analyzers:execute,
 davis-copilot:conversations:execute,
-app-engine:apps:run
+app-engine:apps:run,
+app-engine:functions:run
 ```
 
-**Capabilities**: All read operations, plus create/update/delete your own workflows, dashboards, notebooks, SLOs, and lookup tables.
+### `readwrite-all`
 
----
-
-## Scopes for `readwrite-all`
-
-Use this for team environments and production administration.
+Full resource management for team environments (no data deletion).
 
 ```
-automation:workflows:read,
-automation:workflows:write,
-automation:workflows:run,
-automation:calendars:read,
-automation:calendars:write,
-automation:rules:read,
-automation:rules:write,
 document:documents:read,
 document:documents:write,
-document:documents:delete,
-document:trash.documents:read,
-document:trash.documents:delete,
-storage:logs:read,
-storage:events:read,
-storage:metrics:read,
-storage:spans:read,
-storage:entities:read,
-storage:buckets:read,
-storage:buckets:write,
-storage:files:read,
-storage:files:write,
+automation:workflows:read,
+automation:workflows:write,
+automation:workflows:execute,
 slo:read,
 slo:write,
+settings:schemas:read,
 settings:objects:read,
 settings:objects:write,
+storage:logs:read,
+storage:logs:write,
+storage:events:read,
+storage:events:write,
+storage:metrics:read,
+storage:metrics:write,
+storage:spans:read,
+storage:bizevents:read,
+storage:entities:read,
+storage:smartscape:read,
+storage:system:read,
+storage:security.events:read,
+storage:application.snapshots:read,
+storage:user.events:read,
+storage:user.sessions:read,
+storage:user.replays:read,
+storage:buckets:read,
+storage:buckets:write,
+storage:bucket-definitions:read,
+storage:fieldsets:read,
+storage:fieldset-definitions:read,
+storage:files:read,
+storage:files:write,
+storage:filter-segments:read,
+storage:filter-segments:write,
+iam:users:read,
+iam:groups:read,
+notifications:read,
+vulnerabilities:read,
 davis:analyzers:read,
 davis:analyzers:execute,
 davis-copilot:conversations:execute,
-app-engine:apps:run
+davis-copilot:nl2dql:execute,
+davis-copilot:dql2nl:execute,
+davis-copilot:document-search:execute,
+app-engine:apps:install,
+app-engine:apps:run,
+app-engine:apps:delete,
+app-engine:functions:run,
+app-engine:edge-connects:read,
+app-engine:edge-connects:write
 ```
 
-**Capabilities**: Full resource management except Grail bucket deletion.
+### `dangerously-unrestricted`
 
----
-
-## Scopes for `dangerously-unrestricted`
-
-Use this only for development environments where you need full control including data deletion.
+Full admin access including data deletion and bucket management.
 
 ```
-automation:workflows:read,
-automation:workflows:write,
-automation:workflows:run,
-automation:calendars:read,
-automation:calendars:write,
-automation:rules:read,
-automation:rules:write,
 document:documents:read,
 document:documents:write,
-document:documents:delete,
-document:trash.documents:read,
-document:trash.documents:delete,
+automation:workflows:read,
+automation:workflows:write,
+automation:workflows:execute,
+slo:read,
+slo:write,
+settings:schemas:read,
+settings:objects:read,
+settings:objects:write,
+settings:objects:admin,
 storage:logs:read,
+storage:logs:write,
 storage:events:read,
+storage:events:write,
 storage:metrics:read,
+storage:metrics:write,
 storage:spans:read,
+storage:bizevents:read,
 storage:entities:read,
+storage:smartscape:read,
+storage:system:read,
+storage:security.events:read,
+storage:application.snapshots:read,
+storage:user.events:read,
+storage:user.sessions:read,
+storage:user.replays:read,
 storage:buckets:read,
 storage:buckets:write,
+storage:bucket-definitions:read,
+storage:bucket-definitions:write,
+storage:bucket-definitions:delete,
+storage:bucket-definitions:truncate,
+storage:fieldsets:read,
+storage:fieldset-definitions:read,
+storage:fieldset-definitions:write,
 storage:files:read,
 storage:files:write,
 storage:files:delete,
-slo:read,
-slo:write,
-settings:objects:read,
-settings:objects:write,
+storage:filter-segments:read,
+storage:filter-segments:write,
+storage:filter-segments:share,
+storage:filter-segments:delete,
+storage:filter-segments:admin,
+storage:records:delete,
+iam:users:read,
+iam:groups:read,
+iam:policies:read,
+notifications:read,
+notifications:write,
+vulnerabilities:read,
 davis:analyzers:read,
 davis:analyzers:execute,
 davis-copilot:conversations:execute,
-app-engine:apps:run
+davis-copilot:nl2dql:execute,
+davis-copilot:dql2nl:execute,
+davis-copilot:document-search:execute,
+app-engine:apps:install,
+app-engine:apps:run,
+app-engine:apps:delete,
+app-engine:functions:run,
+app-engine:edge-connects:read,
+app-engine:edge-connects:write
 ```
 
-**Capabilities**: Everything, including Grail bucket deletion and lookup table deletion.
-
 ---
 
-## Scope Details by Resource
+## Quick Reference by Resource Type
 
 ### Workflows
+| Scope | Description |
+|-------|-------------|
+| `automation:workflows:read` | Read workflow definitions |
+| `automation:workflows:write` | Create, update, delete workflows |
+| `automation:workflows:execute` | Execute workflows |
 
-| Operation | Scope |
-|-----------|-------|
-| List, describe, get | `automation:workflows:read` |
-| Create, edit, delete | `automation:workflows:write` |
-| Execute | `automation:workflows:run` |
+### Documents (Dashboards & Notebooks)
+| Scope | Description |
+|-------|-------------|
+| `document:documents:read` | Read dashboards and notebooks |
+| `document:documents:write` | Create, update, delete documents |
 
-### Dashboards & Notebooks
-
-| Operation | Scope |
-|-----------|-------|
-| List, describe, get | `document:documents:read` |
-| Create, edit | `document:documents:write` |
-| Delete (move to trash) | `document:documents:delete` |
-| View trash | `document:trash.documents:read` |
-| Empty trash | `document:trash.documents:delete` |
-
-### DQL Queries
-
-| Operation | Scope |
-|-----------|-------|
-| Query logs | `storage:logs:read` |
-| Query events | `storage:events:read` |
-| Query metrics | `storage:metrics:read` |
-| Query spans/traces | `storage:spans:read` |
-| Query entities | `storage:entities:read` |
+### DQL Queries & Grail Data
+| Scope | Description |
+|-------|-------------|
+| `storage:logs:read` | Read logs |
+| `storage:logs:write` | Write logs |
+| `storage:events:read` | Read events |
+| `storage:events:write` | Write events |
+| `storage:metrics:read` | Read metrics |
+| `storage:metrics:write` | Write metrics |
+| `storage:spans:read` | Read spans |
+| `storage:bizevents:read` | Read business events |
+| `storage:entities:read` | Read entities |
+| `storage:smartscape:read` | Read topology |
+| `storage:system:read` | Read system tables |
+| `storage:security.events:read` | Read security events |
+| `storage:application.snapshots:read` | Read app snapshots |
+| `storage:user.events:read` | Read user events |
+| `storage:user.sessions:read` | Read user sessions |
+| `storage:user.replays:read` | Read session replays |
+| `storage:buckets:read` | Read from buckets |
+| `storage:bucket-definitions:read` | Read bucket definitions |
+| `storage:bucket-definitions:write` | Write bucket definitions |
+| `storage:bucket-definitions:delete` | Delete bucket definitions |
+| `storage:bucket-definitions:truncate` | Truncate bucket data |
+| `storage:fieldsets:read` | Read fieldsets |
+| `storage:fieldset-definitions:read` | Read fieldset schemas |
+| `storage:fieldset-definitions:write` | Write fieldset schemas |
+| `storage:files:read` | Read files/lookup tables |
+| `storage:files:write` | Write files/lookup tables |
+| `storage:files:delete` | Delete files/lookup tables |
+| `storage:filter-segments:read` | Read filter segments |
+| `storage:filter-segments:write` | Write filter segments |
+| `storage:filter-segments:share` | Share filter segments |
+| `storage:filter-segments:delete` | Delete own filter segments |
+| `storage:filter-segments:admin` | Admin all filter segments |
+| `storage:records:delete` | Delete records in Grail |
 
 ### SLOs
+| Scope | Description |
+|-------|-------------|
+| `slo:read` | Read SLOs |
+| `slo:write` | Create, update, delete, evaluate SLOs |
 
-| Operation | Scope |
-|-----------|-------|
-| List, describe, get | `slo:read` |
-| Create, edit, delete, evaluate | `slo:write` |
-
-### Grail Buckets
-
-| Operation | Scope |
-|-----------|-------|
-| List, describe | `storage:buckets:read` |
-| Create, update, delete | `storage:buckets:write` |
-
-### Lookup Tables
-
-| Operation | Scope |
-|-----------|-------|
-| List, describe, get | `storage:files:read` |
-| Create, update | `storage:files:write` |
-| Delete | `storage:files:delete` |
-
-### Settings & OpenPipeline
-
-| Operation | Scope |
-|-----------|-------|
-| List schemas, get objects | `settings:objects:read` |
-| Create, update, delete | `settings:objects:write` |
+### Settings API
+| Scope | Description |
+|-------|-------------|
+| `settings:schemas:read` | Read settings schemas |
+| `settings:objects:read` | Read settings objects |
+| `settings:objects:write` | Create, update, delete settings |
+| `settings:objects:admin` | Admin access for ownership |
 
 ### Davis AI
+| Scope | Description |
+|-------|-------------|
+| `davis:analyzers:read` | View analyzers |
+| `davis:analyzers:execute` | Execute analyzers |
+| `davis-copilot:conversations:execute` | CoPilot chat |
+| `davis-copilot:nl2dql:execute` | Natural language to DQL |
+| `davis-copilot:dql2nl:execute` | DQL to natural language |
+| `davis-copilot:document-search:execute` | Document search |
 
-| Operation | Scope |
-|-----------|-------|
-| List analyzers | `davis:analyzers:read` |
-| Execute analyzers | `davis:analyzers:execute` |
-| CoPilot chat, nl2dql, dql2nl | `davis-copilot:conversations:execute` |
+### App Engine
+| Scope | Description |
+|-------|-------------|
+| `app-engine:apps:install` | Install/update apps |
+| `app-engine:apps:run` | List/run apps, user metadata |
+| `app-engine:apps:delete` | Uninstall apps |
+| `app-engine:functions:run` | Execute functions |
+| `app-engine:edge-connects:read` | Read EdgeConnect |
+| `app-engine:edge-connects:write` | Manage EdgeConnect |
 
-### User Identity
+### IAM
+| Scope | Description |
+|-------|-------------|
+| `iam:users:read` | Read users |
+| `iam:groups:read` | Read groups |
+| `iam:policies:read` | Read policies |
 
-| Operation | Scope |
-|-----------|-------|
-| `dtctl auth whoami` | `app-engine:apps:run` |
-
----
-
-## Creating a Token in Dynatrace
-
-1. Navigate to **Account Management > Identity & Access Management > OAuth clients**
-2. Click **Create client**
-3. Give it a name (e.g., "dtctl-readonly", "dtctl-dev")
-4. Copy the appropriate scope list from above
-5. Paste into the scopes field
-6. Generate and copy the client secret
-
-For detailed instructions, see [Dynatrace OAuth clients documentation](https://docs.dynatrace.com/docs/manage/identity-access-management/access-tokens-and-oauth-clients/oauth-clients).
-
----
-
-## See Also
-
-- [Context Safety Levels](dev/context-safety-levels.md) - How safety levels work
-- [Quick Start](QUICK_START.md) - Getting started with dtctl
+### Other
+| Scope | Description |
+|-------|-------------|
+| `notifications:read` | Read notifications |
+| `notifications:write` | Create/update notifications |
+| `vulnerabilities:read` | Read vulnerabilities |
