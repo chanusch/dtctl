@@ -257,11 +257,6 @@ app-engine:edge-connects:write
 | `storage:user.events:read` | Read user events |
 | `storage:user.sessions:read` | Read user sessions |
 | `storage:user.replays:read` | Read session replays |
-| `storage:buckets:read` | Read from buckets |
-| `storage:bucket-definitions:read` | Read bucket definitions |
-| `storage:bucket-definitions:write` | Write bucket definitions |
-| `storage:bucket-definitions:delete` | Delete bucket definitions |
-| `storage:bucket-definitions:truncate` | Truncate bucket data |
 | `storage:fieldsets:read` | Read fieldsets |
 | `storage:fieldset-definitions:read` | Read fieldset schemas |
 | `storage:fieldset-definitions:write` | Write fieldset schemas |
@@ -274,6 +269,15 @@ app-engine:edge-connects:write
 | `storage:filter-segments:delete` | Delete own filter segments |
 | `storage:filter-segments:admin` | Admin all filter segments |
 | `storage:records:delete` | Delete records in Grail |
+
+### Bucket Management
+| Scope | Description |
+|-------|-------------|
+| `storage:buckets:read` | Read from buckets |
+| `storage:bucket-definitions:read` | Read bucket definitions |
+| `storage:bucket-definitions:write` | Create/update bucket definitions |
+| `storage:bucket-definitions:delete` | Delete bucket definitions |
+| `storage:bucket-definitions:truncate` | Truncate bucket data |
 
 ### SLOs
 | Scope | Description |
