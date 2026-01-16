@@ -553,3 +553,95 @@ func TestConfig_SetContextWithOptions_NilOpts(t *testing.T) {
 		t.Errorf("GetEffectiveSafetyLevel() = %v, want %v", ctx.GetEffectiveSafetyLevel(), SafetyLevelReadWriteAll)
 	}
 }
+
+func TestConfig_DeleteContext(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func() *Config
+		contextName string
+		wantErr     bool
+		wantCount   int
+	}{
+		{
+			name: "delete existing context",
+			setup: func() *Config {
+				cfg := NewConfig()
+				cfg.SetContext("dev", "https://dev.dt.com", "dev-token")
+				cfg.SetContext("prod", "https://prod.dt.com", "prod-token")
+				return cfg
+			},
+			contextName: "dev",
+			wantErr:     false,
+			wantCount:   1,
+		},
+		{
+			name: "delete non-existing context",
+			setup: func() *Config {
+				cfg := NewConfig()
+				cfg.SetContext("dev", "https://dev.dt.com", "dev-token")
+				return cfg
+			},
+			contextName: "nonexistent",
+			wantErr:     true,
+			wantCount:   1,
+		},
+		{
+			name: "delete only context",
+			setup: func() *Config {
+				cfg := NewConfig()
+				cfg.SetContext("only", "https://only.dt.com", "only-token")
+				return cfg
+			},
+			contextName: "only",
+			wantErr:     false,
+			wantCount:   0,
+		},
+		{
+			name: "delete from empty config",
+			setup: func() *Config {
+				return NewConfig()
+			},
+			contextName: "any",
+			wantErr:     true,
+			wantCount:   0,
+		},
+		{
+			name: "delete middle context",
+			setup: func() *Config {
+				cfg := NewConfig()
+				cfg.SetContext("first", "https://first.dt.com", "first-token")
+				cfg.SetContext("middle", "https://middle.dt.com", "middle-token")
+				cfg.SetContext("last", "https://last.dt.com", "last-token")
+				return cfg
+			},
+			contextName: "middle",
+			wantErr:     false,
+			wantCount:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.setup()
+			err := cfg.DeleteContext(tt.contextName)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DeleteContext() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if len(cfg.Contexts) != tt.wantCount {
+				t.Errorf("After DeleteContext(), context count = %d, want %d", len(cfg.Contexts), tt.wantCount)
+			}
+
+			// Verify the deleted context is actually gone
+			if !tt.wantErr {
+				for _, nc := range cfg.Contexts {
+					if nc.Name == tt.contextName {
+						t.Errorf("Context %q should have been deleted but still exists", tt.contextName)
+					}
+				}
+			}
+		})
+	}
+}

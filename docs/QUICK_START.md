@@ -100,6 +100,9 @@ dtctl config use-context prod
 
 # Check current context
 dtctl config current-context
+
+# Delete a context you no longer need
+dtctl config delete-context old-env
 ```
 
 ### One-Time Context Override
