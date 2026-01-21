@@ -29,19 +29,18 @@ dtctl apply -f workflow.yaml                  # Declarative configuration
 - **Template support** — DQL queries with Go template variables
 - **Shell completion** — Tab completion for bash, zsh, fish, and PowerShell
 
-## AI Instructions
+## AI Agent Skill
 
-Copy this into your AI assistant's context:
+dtctl includes an [Agent Skill](https://agentskills.io) at `skills/dtctl/` that teaches AI assistants how to use dtctl.
 
+**To use:** Copy the skill folder to `.github/skills/` (GitHub Copilot) or `.claude/skills/` (Claude Code):
+
+```bash
+cp -r skills/dtctl ~/.github/skills/   # For GitHub Copilot
+cp -r skills/dtctl ~/.claude/skills/   # For Claude Code
 ```
-`dtctl` is a CLI for managing Dynatrace platform resources (workflows, dashboards, notebooks, SLOs, settings, buckets, lookups).
 
-Use `dtctl` for: querying logs/metrics with DQL, managing automation workflows, editing dashboards, applying configurations from YAML files.
-
-Commands: get, describe, create, edit, apply, delete, exec, query
-Output: -o json|yaml|table, --plain (no colors/prompts)
-Help: `dtctl --help, dtctl <command> --help`
-```
+Compatible with GitHub Copilot, Claude Code, and other Agent Skills tools.
 
 ## Quick Start
 
