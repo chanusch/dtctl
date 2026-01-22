@@ -54,7 +54,7 @@ dtctl restore dashboard <id> 3
 
 ### DQL Queries
 ```bash
-dtctl query "fetch logs | filter status='ERROR' | limit 100"
+dtctl query 'fetch logs | filter status="ERROR" | limit 100'
 dtctl query -f query.dql --set host=h-123 --set timerange=2h
 dtctl query "timeseries avg(dt.host.cpu.usage)" -o chart
 dtctl wait query "fetch spans | filter test_id == 'test-123'" --for=count=1 --timeout 5m
