@@ -13,6 +13,7 @@
 ```bash
 dtctl get workflows                           # List all workflows
 dtctl query "fetch logs | limit 10"           # Run DQL queries
+dtctl diff -f workflow.yaml                   # Compare local vs remote
 dtctl edit dashboard "Production Overview"    # Edit resources in your $EDITOR
 dtctl apply -f workflow.yaml                  # Declarative configuration
 ```
@@ -72,8 +73,8 @@ dtctl create lookup -f error_codes.csv --path /lookups/production/errors --looku
 
 | Resource | Operations |
 |----------|------------|
-| Workflows | get, describe, create, edit, delete, execute, history |
-| Dashboards & Notebooks | get, describe, create, edit, delete, share |
+| Workflows | get, describe, create, edit, delete, execute, history, diff |
+| Dashboards & Notebooks | get, describe, create, edit, delete, share, diff |
 | DQL Queries | execute with template variables |
 | SLOs | get, create, delete, apply, evaluate |
 | Settings | get schemas, get/create/update/delete objects |

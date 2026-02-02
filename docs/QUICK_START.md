@@ -2525,7 +2525,42 @@ dtctl apply -f dashboard.yaml --dry-run
 dtctl delete workflow "Test Workflow" --dry-run
 ```
 
-### Show Diff
+### Diff Command
+
+Compare resources before applying changes:
+
+```bash
+# Compare local file with remote resource (auto-detects type and ID from file)
+dtctl diff -f workflow.yaml
+
+# Compare two local files
+dtctl diff -f workflow-v1.yaml -f workflow-v2.yaml
+
+# Compare two remote resources
+dtctl diff workflow prod-workflow staging-workflow
+
+# Different output formats
+dtctl diff -f dashboard.yaml --semantic          # Human-readable with impact analysis
+dtctl diff -f workflow.yaml -o json-patch        # RFC 6902 JSON Patch format
+dtctl diff -f dashboard.yaml --side-by-side      # Split-screen comparison
+
+# Ignore metadata changes (timestamps, versions)
+dtctl diff -f workflow.yaml --ignore-metadata
+
+# Ignore array order (useful for tasks, tiles, etc.)
+dtctl diff -f dashboard.yaml --ignore-order
+
+# Quiet mode (exit code only, for CI/CD)
+dtctl diff -f workflow.yaml --quiet
+# Exit codes: 0 = no changes, 1 = changes found, 2 = error
+
+# Works with all resource types
+dtctl diff -f dashboard.yaml                     # Dashboards
+dtctl diff -f notebook.yaml                      # Notebooks
+dtctl diff -f workflow.yaml                      # Workflows
+```
+
+### Show Diff in Apply
 
 See exactly what changes when updating resources:
 

@@ -1554,7 +1554,22 @@ dtctl delete document <id> --dry-run
 ### Diff
 
 ```bash
-# (not implemented yet)
+# Compare local file with remote resource
+dtctl diff -f workflow.yaml
+
+# Compare two local files
+dtctl diff -f workflow-v1.yaml -f workflow-v2.yaml
+
+# Compare two remote resources
+dtctl diff workflow prod-workflow staging-workflow
+
+# Different output formats
+dtctl diff -f dashboard.yaml --semantic
+dtctl diff -f workflow.yaml -o json-patch
+dtctl diff -f dashboard.yaml --side-by-side
+
+# Ignore metadata and order
+dtctl diff -f workflow.yaml --ignore-metadata --ignore-order
 # dtctl diff -f resource.yaml
 # dtctl diff document <id> local-copy.yaml
 ```

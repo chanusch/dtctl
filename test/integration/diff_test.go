@@ -358,6 +358,268 @@ func TestDiff_ComplexNestedStructure(t *testing.T) {
 	}
 }
 
+func TestDiff_WorkflowResources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	file1 := "../../test/fixtures/diff/workflow-v1.yaml"
+	file2 := "../../test/fixtures/diff/workflow-v2.yaml"
+
+	differ := diff.NewDiffer(diff.DiffOptions{
+		Format: diff.DiffFormatUnified,
+	})
+
+	result, err := differ.CompareFiles(file1, file2)
+	if err != nil {
+		t.Fatalf("CompareFiles() error = %v", err)
+	}
+
+	if !result.HasChanges {
+		t.Error("Expected changes between workflow versions")
+	}
+
+	foundDescriptionChange := false
+	foundTaskNameChange := false
+	foundChannelChange := false
+	foundPriorityAdd := false
+
+	for _, change := range result.Changes {
+		if change.Path == "description" {
+			foundDescriptionChange = true
+		}
+		if change.Path == "tasks[0].name" {
+			foundTaskNameChange = true
+		}
+		if change.Path == "tasks[0].input.channel" {
+			foundChannelChange = true
+		}
+		if change.Path == "tasks[1].input.priority" && change.Operation == diff.ChangeOpAdd {
+			foundPriorityAdd = true
+		}
+	}
+
+	if !foundDescriptionChange {
+		t.Error("Expected to find description change")
+	}
+	if !foundTaskNameChange {
+		t.Error("Expected to find task name change")
+	}
+	if !foundChannelChange {
+		t.Error("Expected to find channel change")
+	}
+	if !foundPriorityAdd {
+		t.Error("Expected to find priority field addition")
+	}
+}
+
+func TestDiff_DashboardResources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	file1 := "../../test/fixtures/diff/dashboard-v1.yaml"
+	file2 := "../../test/fixtures/diff/dashboard-v2.yaml"
+
+	differ := diff.NewDiffer(diff.DiffOptions{
+		Format: diff.DiffFormatUnified,
+	})
+
+	result, err := differ.CompareFiles(file1, file2)
+	if err != nil {
+		t.Fatalf("CompareFiles() error = %v", err)
+	}
+
+	if !result.HasChanges {
+		t.Error("Expected changes between dashboard versions")
+	}
+
+	foundNameChange := false
+	foundDescriptionChange := false
+	foundQueryChange := false
+	foundTileAdd := false
+
+	for _, change := range result.Changes {
+		if change.Path == "name" {
+			foundNameChange = true
+		}
+		if change.Path == "description" {
+			foundDescriptionChange = true
+		}
+		if change.Path == "tiles[0].query" {
+			foundQueryChange = true
+		}
+		if change.Path == "tiles[2]" && change.Operation == diff.ChangeOpAdd {
+			foundTileAdd = true
+		}
+	}
+
+	if !foundNameChange {
+		t.Error("Expected to find name change")
+	}
+	if !foundDescriptionChange {
+		t.Error("Expected to find description change")
+	}
+	if !foundQueryChange {
+		t.Error("Expected to find query change in tile")
+	}
+	if !foundTileAdd {
+		t.Error("Expected to find new tile addition")
+	}
+}
+
+func TestDiff_NotebookResources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	file1 := "../../test/fixtures/diff/notebook-v1.yaml"
+	file2 := "../../test/fixtures/diff/notebook-v2.yaml"
+
+	differ := diff.NewDiffer(diff.DiffOptions{
+		Format: diff.DiffFormatUnified,
+	})
+
+	result, err := differ.CompareFiles(file1, file2)
+	if err != nil {
+		t.Fatalf("CompareFiles() error = %v", err)
+	}
+
+	if !result.HasChanges {
+		t.Error("Expected changes between notebook versions")
+	}
+
+	foundNameChange := false
+	foundDescriptionChange := false
+	foundContentChange := false
+	foundSectionAdd := false
+
+	for _, change := range result.Changes {
+		if change.Path == "name" {
+			foundNameChange = true
+		}
+		if change.Path == "description" {
+			foundDescriptionChange = true
+		}
+		if change.Path == "sections[0].content" {
+			foundContentChange = true
+		}
+		if change.Path == "sections[2]" && change.Operation == diff.ChangeOpAdd {
+			foundSectionAdd = true
+		}
+	}
+
+	if !foundNameChange {
+		t.Error("Expected to find name change")
+	}
+	if !foundDescriptionChange {
+		t.Error("Expected to find description change")
+	}
+	if !foundContentChange {
+		t.Error("Expected to find content change")
+	}
+	if !foundSectionAdd {
+		t.Error("Expected to find new section addition")
+	}
+}
+
+func TestDiff_AllFormats_Workflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	file1 := "../../test/fixtures/diff/workflow-v1.yaml"
+	file2 := "../../test/fixtures/diff/workflow-v2.yaml"
+
+	formats := []struct {
+		name   string
+		format diff.DiffFormat
+	}{
+		{"unified", diff.DiffFormatUnified},
+		{"side-by-side", diff.DiffFormatSideBySide},
+		{"json-patch", diff.DiffFormatJSONPatch},
+		{"semantic", diff.DiffFormatSemantic},
+	}
+
+	for _, tc := range formats {
+		t.Run(tc.name, func(t *testing.T) {
+			differ := diff.NewDiffer(diff.DiffOptions{
+				Format:   tc.format,
+				Semantic: tc.format == diff.DiffFormatSemantic,
+			})
+
+			result, err := differ.CompareFiles(file1, file2)
+			if err != nil {
+				t.Fatalf("CompareFiles() with format %s error = %v", tc.name, err)
+			}
+
+			if !result.HasChanges {
+				t.Errorf("Expected changes with format %s", tc.name)
+			}
+
+			if result.Patch == "" {
+				t.Errorf("Expected non-empty patch output with format %s", tc.name)
+			}
+
+			if tc.format == diff.DiffFormatJSONPatch {
+				var patch []map[string]interface{}
+				if err := json.Unmarshal([]byte(result.Patch), &patch); err != nil {
+					t.Errorf("Failed to parse JSON patch: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestDiff_ResourceTypeDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	tests := []struct {
+		name     string
+		file1    string
+		file2    string
+		wantType string
+	}{
+		{
+			name:     "workflow detection",
+			file1:    "../../test/fixtures/diff/workflow-v1.yaml",
+			file2:    "../../test/fixtures/diff/workflow-v2.yaml",
+			wantType: "workflow",
+		},
+		{
+			name:     "dashboard detection",
+			file1:    "../../test/fixtures/diff/dashboard-v1.yaml",
+			file2:    "../../test/fixtures/diff/dashboard-v2.yaml",
+			wantType: "dashboard",
+		},
+		{
+			name:     "notebook detection",
+			file1:    "../../test/fixtures/diff/notebook-v1.yaml",
+			file2:    "../../test/fixtures/diff/notebook-v2.yaml",
+			wantType: "notebook",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			differ := diff.NewDiffer(diff.DiffOptions{
+				Format: diff.DiffFormatUnified,
+			})
+
+			result, err := differ.CompareFiles(tt.file1, tt.file2)
+			if err != nil {
+				t.Fatalf("CompareFiles() error = %v", err)
+			}
+
+			if !result.HasChanges {
+				t.Error("Expected changes to be detected")
+			}
+		})
+	}
+}
+
 func writeJSON(t *testing.T, path string, data interface{}) {
 	t.Helper()
 	jsonData, err := json.MarshalIndent(data, "", "  ")
