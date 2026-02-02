@@ -126,3 +126,130 @@ func (h *Handler) DeleteApp(appID string) error {
 
 	return nil
 }
+
+// AppFunction represents a function within an app
+type AppFunction struct {
+	AppID        string `json:"appId" table:"APP_ID,wide"`
+	AppName      string `json:"appName" table:"APP"`
+	FunctionName string `json:"functionName" table:"FUNCTION"`
+	Resumable    bool   `json:"resumable" table:"RESUMABLE,wide"`
+	FullName     string `json:"fullName" table:"FULL_NAME"`
+}
+
+// ListFunctions lists all functions across apps (or filtered by app ID)
+func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
+	// Get all apps
+	appList, err := h.ListApps()
+	if err != nil {
+		return nil, err
+	}
+
+	var functions []AppFunction
+
+	// For each app, check if it has functions
+	for _, app := range appList.Apps {
+		// If filter is set, skip apps that don't match
+		if appIDFilter != "" && app.ID != appIDFilter {
+			continue
+		}
+
+		// Get detailed app info to check for functions
+		detailedApp, err := h.GetApp(app.ID)
+		if err != nil {
+			// Skip apps we can't access
+			continue
+		}
+
+		// Check if app has FUNCTIONS subresource type
+		if detailedApp.ResourceStatus == nil || !contains(detailedApp.ResourceStatus.SubResourceTypes, "FUNCTIONS") {
+			continue
+		}
+
+		// Extract functions from manifest
+		if detailedApp.Manifest != nil {
+			if functionsMap, ok := detailedApp.Manifest["functions"].(map[string]interface{}); ok {
+				for functionName, functionData := range functionsMap {
+					resumable := false
+					if functionDataMap, ok := functionData.(map[string]interface{}); ok {
+						if res, ok := functionDataMap["resumable"].(bool); ok {
+							resumable = res
+						}
+					}
+
+					functions = append(functions, AppFunction{
+						AppID:        detailedApp.ID,
+						AppName:      detailedApp.Name,
+						FunctionName: functionName,
+						Resumable:    resumable,
+						FullName:     fmt.Sprintf("%s/%s", detailedApp.ID, functionName),
+					})
+				}
+			}
+		}
+	}
+
+	return functions, nil
+}
+
+// GetFunction gets details about a specific function
+func (h *Handler) GetFunction(fullName string) (*AppFunction, error) {
+	// Parse app-id/function-name format
+	appID, functionName := parseFullFunctionName(fullName)
+	if appID == "" || functionName == "" {
+		return nil, fmt.Errorf("invalid function name format, expected 'app-id/function-name', got %q", fullName)
+	}
+
+	// Get app details
+	app, err := h.GetApp(appID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if app has functions
+	if app.ResourceStatus == nil || !contains(app.ResourceStatus.SubResourceTypes, "FUNCTIONS") {
+		return nil, fmt.Errorf("app %q does not have functions", appID)
+	}
+
+	// Find the function in the manifest
+	if app.Manifest != nil {
+		if functionsMap, ok := app.Manifest["functions"].(map[string]interface{}); ok {
+			if functionData, ok := functionsMap[functionName]; ok {
+				resumable := false
+				if functionDataMap, ok := functionData.(map[string]interface{}); ok {
+					if res, ok := functionDataMap["resumable"].(bool); ok {
+						resumable = res
+					}
+				}
+
+				return &AppFunction{
+					AppID:        app.ID,
+					AppName:      app.Name,
+					FunctionName: functionName,
+					Resumable:    resumable,
+					FullName:     fullName,
+				}, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("function %q not found in app %q", functionName, appID)
+}
+
+// Helper functions
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func parseFullFunctionName(fullName string) (appID, functionName string) {
+	for i := 0; i < len(fullName); i++ {
+		if fullName[i] == '/' {
+			return fullName[:i], fullName[i+1:]
+		}
+	}
+	return "", ""
+}
