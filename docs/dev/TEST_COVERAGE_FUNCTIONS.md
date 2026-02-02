@@ -52,8 +52,8 @@
    - Tests for file reading utilities
    - Validates error handling for nonexistent files
 
-### E2E Tests  
-4. **`test/e2e/appengine_test.go`** (247 lines)
+### E2E Tests
+1. **`test/e2e/appengine_test.go`** (247 lines)
    - Integration tests for listing/filtering functions
    - Tests for getting specific functions
    - Tests for apps listing and retrieval
