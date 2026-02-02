@@ -168,7 +168,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [ ] JSONPath output
 
 ### Resource Gaps
-- [ ] Document trash (list/restore deleted)
+- [x] Document trash (list/restore deleted) - See [DOCUMENT_TRASH_DESIGN.md](DOCUMENT_TRASH_DESIGN.md)
 
 ---
 

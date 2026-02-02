@@ -588,6 +588,88 @@ dtctl delete notebook "Old Analysis"
 dtctl delete dashboard dash-123 -y
 ```
 
+**Note**: Deleted documents are moved to trash and kept for 30 days before permanent deletion. See [Trash Management](#trash-management) below.
+
+### Trash Management
+
+Deleted dashboards and notebooks are moved to trash and kept for 30 days before permanent deletion. You can list, view, restore, or permanently delete items in trash.
+
+#### List Trash
+
+```bash
+# List all trashed documents
+dtctl get trash
+
+# List only trashed dashboards
+dtctl get trash --type dashboard
+
+# List only trashed notebooks
+dtctl get trash --type notebook
+
+# List only documents you deleted
+dtctl get trash --mine
+
+# Filter by deletion date
+dtctl get trash --deleted-after 2024-01-01
+dtctl get trash --deleted-before 2024-12-31
+
+# Output in different formats
+dtctl get trash -o json
+dtctl get trash -o yaml
+```
+
+**Example output:**
+```
+ID                                    TYPE        NAME                DELETED BY    DELETED AT           EXPIRES IN
+abc123-def456-ghi789-jkl012-mno345    dashboard   Prod Overview       john.doe      2024-01-15 10:30:00  29 days
+xyz987-uvw654-rst321-opq098-lmn765    notebook    Debug Session       jane.smith    2024-01-20 14:45:00  24 days
+```
+
+#### View Trash Details
+
+```bash
+# Get detailed information about a trashed document
+dtctl describe trash abc-123
+
+# Shows: ID, name, type, owner, deleted by, deletion date, expiration date, size, tags, etc.
+```
+
+#### Restore from Trash
+
+```bash
+# Restore a single document
+dtctl restore trash abc-123
+
+# Restore multiple documents
+dtctl restore trash abc-123 def-456 ghi-789
+
+# Restore with a new name (to avoid conflicts)
+dtctl restore trash abc-123 --new-name "Recovered Dashboard"
+
+# Force restore (overwrite if name conflict exists)
+dtctl restore trash abc-123 --force
+```
+
+#### Permanently Delete from Trash
+
+**WARNING**: Permanent deletion cannot be undone!
+
+```bash
+# Permanently delete a single document
+dtctl delete trash abc-123 --permanent
+
+# Permanently delete multiple documents
+dtctl delete trash abc-123 def-456 --permanent -y
+
+# The --permanent flag is required to prevent accidental deletion
+```
+
+**Notes:**
+- Documents remain in trash for **30 days** before automatic permanent deletion
+- You can only restore documents that haven't expired yet
+- Trash operations require appropriate permissions (document owner or admin)
+- Use `--deleted-by` flag to filter by who deleted the documents
+
 ---
 
 ## DQL Queries

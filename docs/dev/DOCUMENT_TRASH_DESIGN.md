@@ -1,8 +1,11 @@
 # Document Trash Design Proposal
 
-**Status:** Design Proposal  
-**Created:** 2026-02-02  
+**Status:** Implemented ✅ (Core functionality only)
+**Created:** 2026-02-02
+**Implemented:** 2026-02-02
 **Author:** dtctl team
+
+> **Implementation Note:** This document was written as a design proposal. The final implementation is based on the actual Dynatrace Platform API, which provides a subset of the proposed functionality. Features like "empty trash", expiration time display, and filtering by document owner are NOT supported by the API and therefore not implemented. See the "Actual Implementation" section below for what was actually built.
 
 ## Overview
 
@@ -10,11 +13,11 @@ Document trash functionality allows users to list, restore, and permanently dele
 
 ## Goals
 
-1. **List trashed documents** - View deleted dashboards and notebooks
-2. **Restore documents** - Recover accidentally deleted items
-3. **Permanent deletion** - Empty trash or delete specific items
-4. **Retention awareness** - Show time remaining before auto-deletion
-5. **Bulk operations** - Restore or delete multiple items
+1. **List trashed documents** - View deleted dashboards and notebooks ✅
+2. **Restore documents** - Recover accidentally deleted items ✅
+3. **Permanent deletion** - Delete specific items ✅ (Note: "Empty trash" is NOT supported by API)
+4. **Retention awareness** - Show deletion info ✅ (Note: Expiration time is NOT exposed by API)
+5. **Bulk operations** - Restore or delete multiple items ✅
 
 ## Non-Goals
 
@@ -25,7 +28,46 @@ Document trash functionality allows users to list, restore, and permanently dele
 
 ---
 
-## User Experience
+## Actual Implementation
+
+Based on the Dynatrace Platform API (`/platform/document/v1/trash/documents`), the following features are **implemented**:
+
+### ✅ Supported Features
+
+- **List trashed documents**: `dtctl get trash` with filters:
+  - `--type` (dashboard, notebook)
+  - `--deleted-by` (filter by user who deleted)
+  - `--deleted-after` / `--deleted-before` (filter by deletion date)
+- **Get trash details**: `dtctl describe trash <id>`
+- **Restore documents**: `dtctl restore trash <id> [<id>...]`
+- **Permanent deletion**: `dtctl delete trash <id> [<id>...] --permanent`
+- **Watch mode**: `dtctl get trash --watch`
+- **All output formats**: table, JSON, YAML, CSV
+
+### ❌ NOT Supported by API (Not Implemented)
+
+- **Empty trash** - No API endpoint exists for bulk trash deletion
+- **Expiration time display** - API does not expose when documents expire
+- **Filter by owner** (`--mine`, `--owner` flags) - API only supports `deletedBy` filter
+- **Trash size/metadata** - API does not expose document sizes or detailed metadata in trash
+
+### API Structure
+
+The actual API provides:
+- `GET /platform/document/v1/trash/documents` - List trash (with filter support)
+- `GET /platform/document/v1/trash/documents/{id}` - Get trash details
+- `POST /platform/document/v1/trash/documents/{id}/restore` - Restore document
+- `DELETE /platform/document/v1/trash/documents/{id}` - Permanently delete
+
+**Data fields available:**
+- `id`, `name`, `type` (dashboard/notebook)
+- `deletionInfo`: `deletedBy` (user email), `deletedTime` (timestamp)
+- `version`, `owner` (in detailed view)
+- `modificationInfo` (last modified time/user, in detailed view)
+
+---
+
+## User Experience (Proposed Design)
 
 ### Basic Usage
 
