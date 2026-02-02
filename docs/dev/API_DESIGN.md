@@ -443,8 +443,17 @@ dtctl delete app <id>                            # Uninstall app
 
 # App Functions (from installed apps)
 # Resource name: function/functions (short: fn, func)
-dtctl get functions --app <app-id>               # List functions in an app
-dtctl describe function <app-id>/<function-name> # Function details
+dtctl get functions                              # List all functions across all apps
+dtctl get functions --app <app-id>               # List functions for a specific app
+dtctl get function <app-id>/<function-name>      # Get specific function details
+dtctl get functions -o wide                      # Show title, description, resumable, stateful
+dtctl get functions -o json                      # JSON output with all metadata
+
+# Describe function with detailed information
+dtctl describe function <app-id>/<function-name> # Show function details and usage
+dtctl describe function <app-id>/<function-name> -o json  # JSON output
+
+# Execute functions
 dtctl exec function <app-id>/<function-name>     # Execute function (GET)
 dtctl exec function <app-id>/<function-name> --method POST --payload '{"key":"value"}'
 dtctl exec function <app-id>/<function-name> --method POST --data @payload.json

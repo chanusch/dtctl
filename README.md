@@ -76,7 +76,8 @@ dtctl create lookup -f error_codes.csv --path /lookups/production/errors --looku
 | Settings | get schemas, get/create/update/delete objects |
 | Buckets | get, describe, create, delete |
 | Lookup Tables | get, describe, create, delete (CSV auto-detection) |
-| And more... | OpenPipeline, EdgeConnect, Davis AI |
+| App Functions | get, describe, execute (discover & run serverless functions) |
+| And more... | Apps, EdgeConnect, Davis AI |
 
 ## Documentation
 

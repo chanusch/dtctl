@@ -1779,6 +1779,7 @@ func init() {
 	getCmd.AddCommand(getBucketsCmd)
 	getCmd.AddCommand(getLookupsCmd)
 	getCmd.AddCommand(getAppsCmd)
+	getCmd.AddCommand(getFunctionsCmd)
 	getCmd.AddCommand(getEdgeConnectsCmd)
 	getCmd.AddCommand(getUsersCmd)
 	getCmd.AddCommand(getGroupsCmd)

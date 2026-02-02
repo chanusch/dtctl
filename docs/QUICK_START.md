@@ -1615,7 +1615,7 @@ See [TOKEN_SCOPES.md](TOKEN_SCOPES.md) for complete scope lists by safety level.
 
 ## App Engine
 
-Manage Dynatrace apps and functions.
+Manage Dynatrace apps and their serverless functions.
 
 ### List and View Apps
 
@@ -1632,6 +1632,169 @@ dtctl get app app-123
 # Detailed view
 dtctl describe app app-123
 ```
+
+### App Functions
+
+App functions are serverless backend functions exposed by installed apps. They can be invoked via HTTP to perform various operations like sending notifications, querying external APIs, or executing custom logic.
+
+#### Discover Functions
+
+```bash
+# List all functions across all installed apps
+dtctl get functions
+
+# List functions for a specific app
+dtctl get functions --app dynatrace.automations
+
+# Show function descriptions and metadata (wide output)
+dtctl get functions --app dynatrace.automations -o wide
+
+# Get details about a specific function
+dtctl get function dynatrace.automations/execute-dql-query
+
+# Describe a function (shows usage and metadata)
+dtctl describe function dynatrace.automations/execute-dql-query
+```
+
+**Example output:**
+```
+Function:     execute-dql-query
+Full Name:    dynatrace.automations/execute-dql-query
+Title:        Execute DQL Query
+Description:  Make use of Dynatrace Grail data in your workflow.
+App:          Workflows (dynatrace.automations)
+Resumable:    false
+Stateful:     true
+
+Usage:
+  dtctl exec function dynatrace.automations/execute-dql-query
+```
+
+#### Execute Functions
+
+> **Note:** Function input schemas are not currently exposed through the API. To discover what payload a function expects, try executing it with an empty payload `{}` to see the error message listing required fields, or check the Dynatrace UI documentation for the app.
+
+```bash
+# Execute a DQL query function (requires dynatrace.automations app - built-in)
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --payload '{"query":"fetch logs | limit 5"}' \
+  -o json
+
+# Execute with payload from file
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --data @query.json
+
+# Execute with GET method (for functions that don't require input)
+dtctl exec function <app-id>/<function-name>
+```
+
+**Discovering Required Payload Fields:**
+
+Functions don't expose their schemas via the API. To discover what fields are required, try executing the function with an empty payload and examine the error message:
+
+```bash
+# Try with empty payload to see what fields are required
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --payload '{}' \
+  -o json 2>&1 | jq -r '.body' | jq -r '.error'
+
+# Output: Error: Input fields 'query' are missing.
+```
+
+#### Tips for Working with Functions
+
+**Discover available functions:**
+```bash
+# List all available functions
+dtctl get functions
+
+# Find functions by keyword
+dtctl get functions | grep -i "query\|http"
+
+# Export function inventory
+dtctl get functions -o json > functions-inventory.json
+
+# Get detailed info about a function (shows title, description, stateful)
+dtctl get functions --app dynatrace.automations -o wide
+```
+
+**Find function payloads:**
+```bash
+# Method 1: Check the Dynatrace UI
+# Navigate to Apps → [App Name] → View function documentation
+
+# Method 2: Use error messages to discover required fields
+dtctl exec function <app-id>/<function-name> \
+  --method POST \
+  --payload '{}' \
+  -o json 2>&1 | jq -r '.body' | jq -r '.error // .logs'
+
+# Method 3: Look at existing workflows that use the function
+dtctl get workflows -o json | jq -r '.[] | select(.tasks != null)'
+```
+
+**Common Function Examples:**
+
+```bash
+# DQL Query (dynatrace.automations/execute-dql-query)
+# Required: query (string)
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --payload '{"query":"fetch logs | limit 5"}' \
+  -o json
+
+# Send Email (dynatrace.email/send-email)
+# Required: to, cc, bcc (arrays), subject, content (strings)
+dtctl exec function dynatrace.email/send-email \
+  --method POST \
+  --payload '{
+    "to": ["user@example.com"],
+    "cc": [],
+    "bcc": [],
+    "subject": "Test Email",
+    "content": "This is a test email from dtctl"
+  }'
+
+# Slack Message (dynatrace.slack/slack-send-message)
+# Required: connection, channel, message
+dtctl exec function dynatrace.slack/slack-send-message \
+  --method POST \
+  --payload '{
+    "connection": "connection-id",
+    "channel": "#alerts",
+    "message": "Hello from dtctl"
+  }'
+
+# Jira Create Issue (dynatrace.jira/jira-create-issue)
+# Required: connectionId, project, issueType, components, summary, description
+dtctl exec function dynatrace.jira/jira-create-issue \
+  --method POST \
+  --payload '{
+    "connectionId": "connection-id",
+    "project": "PROJ",
+    "issueType": "Bug",
+    "components": [],
+    "summary": "Issue from dtctl",
+    "description": "Created via dtctl"
+  }'
+
+# AbuseIPDB Check (dynatrace.abuseipdb/check-ip)
+# Required: observable (object), settingsObjectId (string)
+dtctl exec function dynatrace.abuseipdb/check-ip \
+  --method POST \
+  --payload '{
+    "observable": {"type": "IP", "value": "8.8.8.8"},
+    "settingsObjectId": "settings-object-id"
+  }'
+```
+
+**Required Token Scopes:**
+- `app-engine:apps:run` - Execute app functions
+
+See [TOKEN_SCOPES.md](TOKEN_SCOPES.md) for complete scope lists.
 
 ### Delete Apps
 
