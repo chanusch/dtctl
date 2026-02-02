@@ -1644,15 +1644,15 @@ App functions are serverless backend functions exposed by installed apps. They c
 dtctl get functions
 
 # List functions for a specific app
-dtctl get functions --app dynatrace.slack
+dtctl get functions --app dynatrace.automations
 
 # Show function descriptions and metadata (wide output)
 dtctl get functions --app dynatrace.automations -o wide
 
 # Get details about a specific function
-dtctl get function dynatrace.slack/slack-send-message
+dtctl get function dynatrace.automations/execute-dql-query
 
-# Describe a function (shows usage examples)
+# Describe a function (shows usage and metadata)
 dtctl describe function dynatrace.automations/execute-dql-query
 ```
 
@@ -1672,106 +1672,142 @@ Usage:
 
 #### Execute Functions
 
+> **Note:** Function input schemas are not currently exposed through the API. To discover what payload a function expects, try executing it with an empty payload `{}` to see the error message listing required fields, or check the Dynatrace UI documentation for the app.
+
 ```bash
-# Execute a function with GET method (default)
-dtctl exec function dynatrace.slack/slack-send-message
-
-# Execute with POST and JSON payload
-dtctl exec function dynatrace.slack/slack-send-message \
-  --method POST \
-  --payload '{"channel":"#alerts","message":"Test message"}'
-
-# Execute with payload from file
-dtctl exec function dynatrace.github.connector/create-issue \
-  --method POST \
-  --data @issue.json
-
-# Execute and output as JSON
-dtctl exec function dynatrace.abuseipdb/check-ip \
-  --method POST \
-  --payload '{"ip":"8.8.8.8"}' \
-  -o json
-```
-
-**Example payload file** (`slack-message.json`):
-```json
-{
-  "channel": "#production-alerts",
-  "message": "Service health check completed successfully",
-  "attachments": [
-    {
-      "color": "good",
-      "title": "Health Status",
-      "text": "All systems operational"
-    }
-  ]
-}
-```
-
-#### Common Use Cases
-
-**1. Send Slack notifications:**
-```bash
-# Discover Slack functions
-dtctl get functions --app dynatrace.slack
-
-# Send a message
-dtctl exec function dynatrace.slack/slack-send-message \
-  --method POST \
-  --payload '{"channel":"#alerts","message":"CPU threshold exceeded"}'
-```
-
-**2. Create GitHub issues:**
-```bash
-# List GitHub connector functions
-dtctl get functions --app dynatrace.github.connector
-
-# Create an issue
-dtctl exec function dynatrace.github.connector/create-issue \
-  --method POST \
-  --data @github-issue.json
-```
-
-**3. Execute DQL queries from workflows:**
-```bash
-# Execute a DQL query via workflow action
+# Execute a DQL query function (requires dynatrace.automations app - built-in)
 dtctl exec function dynatrace.automations/execute-dql-query \
   --method POST \
-  --payload '{"query":"fetch logs | filter status='\''ERROR'\'' | limit 10"}'
+  --payload '{"query":"fetch logs | limit 5"}' \
+  -o json
+
+# Execute with payload from file
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --data @query.json
+
+# Execute with GET method (for functions that don't require input)
+dtctl exec function <app-id>/<function-name>
 ```
 
-**4. Send emails:**
-```bash
-# List email functions
-dtctl get functions --app dynatrace.email
+**Discovering Required Payload Fields:**
 
-# Send an email
-dtctl exec function dynatrace.email/send-email \
+Functions don't expose their schemas via the API. Use schema discovery to find required fields:
+
+```bash
+# Discover function schema automatically
+dtctl describe function dynatrace.automations/execute-dql-query --discover-schema
+
+# Output:
+# Function: dynatrace.automations/execute-dql-query
+# 
+# Required Fields:
+#   query  unknown
+# 
+# Example payload:
+#   {
+#     "query": "..."
+#   }
+
+# Manual discovery: try with empty payload to see what fields are required
+dtctl exec function dynatrace.automations/execute-dql-query \
   --method POST \
-  --payload '{"to":"team@example.com","subject":"Alert","body":"Issue detected"}'
+  --payload '{}' \
+  -o json 2>&1 | jq -r '.body' | jq -r '.error'
+
+# Output: Error: Input fields 'query' are missing.
 ```
 
 #### Tips for Working with Functions
 
 **Discover available functions:**
 ```bash
-# Find all functions related to notifications
-dtctl get functions | grep -i "send\|notify\|message"
+# List all available functions
+dtctl get functions
+
+# Find functions by keyword
+dtctl get functions | grep -i "query\|http"
 
 # Export function inventory
 dtctl get functions -o json > functions-inventory.json
 
-# Find functions by app
+# Get detailed info about a function (shows title, description, stateful)
 dtctl get functions --app dynatrace.automations -o wide
 ```
 
-**Test functions interactively:**
+**Find function payloads:**
 ```bash
-# Use jq to format responses
-dtctl exec function myapp/myfunction -o json | jq .
+# Method 1: Use schema discovery (recommended)
+dtctl describe function dynatrace.automations/execute-dql-query --discover-schema
+dtctl describe function dynatrace.email/send-email --discover-schema
+dtctl describe function dynatrace.slack/slack-send-message --discover-schema
 
-# Check function response codes
-dtctl exec function myapp/test-connection --method POST --payload '{}'
+# Method 2: Check the Dynatrace UI
+# Navigate to Apps → [App Name] → View function documentation
+
+# Method 3: Use error messages to discover required fields
+dtctl exec function <app-id>/<function-name> \
+  --method POST \
+  --payload '{}' \
+  -o json 2>&1 | jq -r '.body' | jq -r '.error // .logs'
+
+# Method 4: Look at existing workflows that use the function
+dtctl get workflows -o json | jq -r '.[] | select(.tasks != null)'
+```
+
+**Common Function Examples:**
+
+```bash
+# DQL Query (dynatrace.automations/execute-dql-query)
+# Required: query (string)
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --payload '{"query":"fetch logs | limit 5"}' \
+  -o json
+
+# Send Email (dynatrace.email/send-email)
+# Required: to, cc, bcc (arrays), subject, content (strings)
+dtctl exec function dynatrace.email/send-email \
+  --method POST \
+  --payload '{
+    "to": ["user@example.com"],
+    "cc": [],
+    "bcc": [],
+    "subject": "Test Email",
+    "content": "This is a test email from dtctl"
+  }'
+
+# Slack Message (dynatrace.slack/slack-send-message)
+# Required: connection, channel, message
+dtctl exec function dynatrace.slack/slack-send-message \
+  --method POST \
+  --payload '{
+    "connection": "connection-id",
+    "channel": "#alerts",
+    "message": "Hello from dtctl"
+  }'
+
+# Jira Create Issue (dynatrace.jira/jira-create-issue)
+# Required: connectionId, project, issueType, components, summary, description
+dtctl exec function dynatrace.jira/jira-create-issue \
+  --method POST \
+  --payload '{
+    "connectionId": "connection-id",
+    "project": "PROJ",
+    "issueType": "Bug",
+    "components": [],
+    "summary": "Issue from dtctl",
+    "description": "Created via dtctl"
+  }'
+
+# AbuseIPDB Check (dynatrace.abuseipdb/check-ip)
+# Required: observable (object), settingsObjectId (string)
+dtctl exec function dynatrace.abuseipdb/check-ip \
+  --method POST \
+  --payload '{
+    "observable": {"type": "IP", "value": "8.8.8.8"},
+    "settingsObjectId": "settings-object-id"
+  }'
 ```
 
 **Required Token Scopes:**
