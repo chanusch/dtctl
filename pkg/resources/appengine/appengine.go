@@ -58,7 +58,7 @@ type AppList struct {
 // ListApps lists all installed apps
 func (h *Handler) ListApps() (*AppList, error) {
 	resp, err := h.client.HTTP().R().
-		SetQueryParam("add-fields", "isBuiltin,manifest").
+		SetQueryParam("add-fields", "isBuiltin,manifest,resourceStatus.subResourceTypes").
 		Get("/platform/app-engine/registry/v1/apps")
 
 	if err != nil {
@@ -141,7 +141,7 @@ type AppFunction struct {
 
 // ListFunctions lists all functions across apps (or filtered by app ID)
 func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
-	// Get all apps
+	// Get all apps with manifest and resourceStatus in a single call
 	appList, err := h.ListApps()
 	if err != nil {
 		return nil, err
@@ -149,27 +149,20 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 
 	var functions []AppFunction
 
-	// For each app, check if it has functions
+	// For each app, check if it has functions (no additional API calls needed)
 	for _, app := range appList.Apps {
 		// If filter is set, skip apps that don't match
 		if appIDFilter != "" && app.ID != appIDFilter {
 			continue
 		}
 
-		// Get detailed app info to check for functions
-		detailedApp, err := h.GetApp(app.ID)
-		if err != nil {
-			// Skip apps we can't access
+		// Check if app has FUNCTIONS subresource type (data already fetched)
+		if app.ResourceStatus == nil || !contains(app.ResourceStatus.SubResourceTypes, "FUNCTIONS") {
 			continue
 		}
 
-		// Check if app has FUNCTIONS subresource type
-		if detailedApp.ResourceStatus == nil || !contains(detailedApp.ResourceStatus.SubResourceTypes, "FUNCTIONS") {
-			continue
-		}
-
-		// Extract functions from manifest
-		if detailedApp.Manifest != nil {
+		// Extract functions from manifest (already fetched)
+		if app.Manifest != nil {
 			// First, build a map of action metadata by function name
 			actionMetadata := make(map[string]struct {
 				title       string
@@ -177,7 +170,7 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 				stateful    bool
 			})
 
-			if actionsArray, ok := detailedApp.Manifest["actions"].([]interface{}); ok {
+			if actionsArray, ok := app.Manifest["actions"].([]interface{}); ok {
 				for _, action := range actionsArray {
 					if actionMap, ok := action.(map[string]interface{}); ok {
 						name, _ := actionMap["name"].(string)
@@ -195,7 +188,7 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 			}
 
 			// Now extract functions and merge with action metadata
-			if functionsMap, ok := detailedApp.Manifest["functions"].(map[string]interface{}); ok {
+			if functionsMap, ok := app.Manifest["functions"].(map[string]interface{}); ok {
 				for functionName, functionData := range functionsMap {
 					resumable := false
 					if functionDataMap, ok := functionData.(map[string]interface{}); ok {
@@ -208,14 +201,14 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 					metadata := actionMetadata[functionName]
 
 					functions = append(functions, AppFunction{
-						AppID:        detailedApp.ID,
-						AppName:      detailedApp.Name,
+						AppID:        app.ID,
+						AppName:      app.Name,
 						FunctionName: functionName,
 						Title:        metadata.title,
 						Description:  metadata.description,
 						Resumable:    resumable,
 						Stateful:     metadata.stateful,
-						FullName:     fmt.Sprintf("%s/%s", detailedApp.ID, functionName),
+						FullName:     fmt.Sprintf("%s/%s", app.ID, functionName),
 					})
 				}
 			}

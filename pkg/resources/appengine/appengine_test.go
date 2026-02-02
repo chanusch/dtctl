@@ -50,7 +50,7 @@ func TestHandler_ListApps(t *testing.T) {
 				if r.URL.Path != "/platform/app-engine/registry/v1/apps" {
 					t.Errorf("unexpected path: %s", r.URL.Path)
 				}
-				if r.URL.Query().Get("add-fields") != "isBuiltin,manifest" {
+				if r.URL.Query().Get("add-fields") != "isBuiltin,manifest,resourceStatus.subResourceTypes" {
 					t.Errorf("missing add-fields query param")
 				}
 
