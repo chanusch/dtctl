@@ -298,6 +298,19 @@ Examples:
 			filters.Owner = userID
 		}
 
+		// Check if watch mode is enabled
+		watchMode, _ := cmd.Flags().GetBool("watch")
+		if watchMode {
+			fetcher := func() (interface{}, error) {
+				list, err := handler.List(filters)
+				if err != nil {
+					return nil, err
+				}
+				return document.ConvertToDocuments(list), nil
+			}
+			return executeWithWatch(cmd, fetcher, printer)
+		}
+
 		list, err := handler.List(filters)
 		if err != nil {
 			return err
@@ -373,6 +386,19 @@ Examples:
 				return fmt.Errorf("failed to get current user ID for --mine filter: %w", err)
 			}
 			filters.Owner = userID
+		}
+
+		// Check if watch mode is enabled
+		watchMode, _ := cmd.Flags().GetBool("watch")
+		if watchMode {
+			fetcher := func() (interface{}, error) {
+				list, err := handler.List(filters)
+				if err != nil {
+					return nil, err
+				}
+				return document.ConvertToDocuments(list), nil
+			}
+			return executeWithWatch(cmd, fetcher, printer)
 		}
 
 		list, err := handler.List(filters)
