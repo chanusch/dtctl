@@ -62,6 +62,16 @@ func (p *WatchPrinter) PrintList(data interface{}) error {
 }
 
 func (p *WatchPrinter) PrintChanges(changes []Change) error {
+	if len(changes) == 0 {
+		return nil
+	}
+
+	// For table output, we need to print headers once and then all rows with prefixes
+	if tablePrinter, ok := p.basePrinter.(*TablePrinter); ok {
+		return p.printTableWithPrefixes(changes, tablePrinter)
+	}
+
+	// For non-table formats, print each change with prefix
 	for _, change := range changes {
 		var prefix string
 		var color string
@@ -86,6 +96,30 @@ func (p *WatchPrinter) PrintChanges(changes []Change) error {
 		}
 	}
 	return nil
+}
+
+func (p *WatchPrinter) printTableWithPrefixes(changes []Change, tablePrinter *TablePrinter) error {
+	// Only print actual changes (no headers, streaming style like kubectl --watch)
+	for _, change := range changes {
+		prefix, color := p.getPrefixAndColor(change.Type)
+		if err := p.printTableRow(change.Resource, prefix, color, tablePrinter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *WatchPrinter) getPrefixAndColor(changeType ChangeType) (string, string) {
+	switch changeType {
+	case ChangeTypeAdded:
+		return "+", Green
+	case ChangeTypeModified:
+		return "~", Yellow
+	case ChangeTypeDeleted:
+		return "-", Red
+	default:
+		return " ", ""
+	}
 }
 
 func (p *WatchPrinter) printWithPrefix(resource interface{}, prefix string, color string) error {

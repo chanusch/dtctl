@@ -27,6 +27,7 @@ func (d *Differ) Detect(current []interface{}) []Change {
 		}
 	}
 
+	// Detect additions and modifications - only return actual changes
 	for id, item := range currentMap {
 		if prev, exists := d.previous[id]; !exists {
 			changes = append(changes, Change{
@@ -45,6 +46,7 @@ func (d *Differ) Detect(current []interface{}) []Change {
 		}
 	}
 
+	// Detect deletions
 	for id, item := range d.previous {
 		if _, exists := currentMap[id]; !exists {
 			changes = append(changes, Change{

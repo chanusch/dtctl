@@ -81,6 +81,8 @@ func (w *Watcher) poll(ctx context.Context, initial bool) error {
 	}
 
 	if initial && w.showInitial {
+		// Initialize differ state so next poll doesn't see everything as "added"
+		w.differ.Detect(resources)
 		if w.printer != nil {
 			return w.printer.PrintList(resources)
 		}
@@ -89,14 +91,18 @@ func (w *Watcher) poll(ctx context.Context, initial bool) error {
 
 	changes := w.differ.Detect(resources)
 
-	if len(changes) > 0 && w.printer != nil {
+	// Always print the full table with change indicators
+	if w.printer != nil {
 		watchPrinter, ok := w.printer.(output.WatchPrinterInterface)
 		if ok {
 			return watchPrinter.PrintChanges(changes)
 		}
+		// Fallback for non-watch printers - only print actual changes
 		for _, change := range changes {
-			if err := w.printer.Print(change.Resource); err != nil {
-				return err
+			if change.Type != "" {
+				if err := w.printer.Print(change.Resource); err != nil {
+					return err
+				}
 			}
 		}
 	}
