@@ -152,15 +152,13 @@ func (h *IntentHandler) GenerateIntentURL(appID, intentID string, payload map[st
 func extractIntentsFromManifest(app App) []Intent {
 	var intents []Intent
 
-	// Navigate manifest structure: manifest.app.intents
+	// Navigate manifest structure: manifest.intents (object/map at top level)
 	if app.Manifest != nil {
-		if appData, ok := app.Manifest["app"].(map[string]interface{}); ok {
-			if intentsArray, ok := appData["intents"].([]interface{}); ok {
-				for _, intentData := range intentsArray {
-					if intentMap, ok := intentData.(map[string]interface{}); ok {
-						intent := parseIntentFromMap(app.ID, app.Name, intentMap)
-						intents = append(intents, intent)
-					}
+		if intentsMap, ok := app.Manifest["intents"].(map[string]interface{}); ok {
+			for intentID, intentData := range intentsMap {
+				if intentMap, ok := intentData.(map[string]interface{}); ok {
+					intent := parseIntentFromMap(app.ID, app.Name, intentID, intentMap)
+					intents = append(intents, intent)
 				}
 			}
 		}
@@ -170,9 +168,18 @@ func extractIntentsFromManifest(app App) []Intent {
 }
 
 // parseIntentFromMap parses an intent from a manifest map
-func parseIntentFromMap(appID, appName string, intentMap map[string]interface{}) Intent {
-	intentID, _ := intentMap["id"].(string)
+func parseIntentFromMap(appID, appName, intentID string, intentMap map[string]interface{}) Intent {
+	// Get intent metadata
+	name, _ := intentMap["name"].(string)
 	description, _ := intentMap["description"].(string)
+
+	// If no explicit display name, use description or intent ID
+	if name == "" {
+		name = description
+	}
+	if description == "" {
+		description = name
+	}
 
 	// Parse properties
 	properties := make(map[string]IntentProperty)
@@ -181,10 +188,27 @@ func parseIntentFromMap(appID, appName string, intentMap map[string]interface{})
 	if propsMap, ok := intentMap["properties"].(map[string]interface{}); ok {
 		for propName, propData := range propsMap {
 			if propMap, ok := propData.(map[string]interface{}); ok {
-				propType, _ := propMap["type"].(string)
+				// Get required flag (defaults to false)
 				propRequired, _ := propMap["required"].(bool)
-				propFormat, _ := propMap["format"].(string)
-				propDescription, _ := propMap["description"].(string)
+
+				// Extract type and format from schema
+				propType := "string" // default
+				propFormat := ""
+				propDescription := ""
+
+				if schema, ok := propMap["schema"].(map[string]interface{}); ok {
+					if schemaType, ok := schema["type"].(string); ok {
+						propType = schemaType
+					}
+					if schemaFormat, ok := schema["format"].(string); ok {
+						propFormat = schemaFormat
+					}
+				}
+
+				// Try to get description at property level
+				if desc, ok := propMap["description"].(string); ok {
+					propDescription = desc
+				}
 
 				properties[propName] = IntentProperty{
 					Type:        propType,

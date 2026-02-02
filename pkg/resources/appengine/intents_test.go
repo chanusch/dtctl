@@ -16,17 +16,19 @@ func TestExtractIntentsFromManifest(t *testing.T) {
 				ID:   "test.app",
 				Name: "Test App",
 				Manifest: map[string]interface{}{
-					"app": map[string]interface{}{
-						"intents": []interface{}{
-							map[string]interface{}{
-								"id":          "view-trace",
-								"description": "View distributed trace",
-								"properties": map[string]interface{}{
-									"trace_id": map[string]interface{}{
-										"type":     "string",
-										"required": true,
+					"intents": map[string]interface{}{
+						"view-trace": map[string]interface{}{
+							"description": "View distributed trace",
+							"properties": map[string]interface{}{
+								"trace_id": map[string]interface{}{
+									"required": true,
+									"schema": map[string]interface{}{
+										"type": "string",
 									},
-									"timestamp": map[string]interface{}{
+								},
+								"timestamp": map[string]interface{}{
+									"required": false,
+									"schema": map[string]interface{}{
 										"type":   "string",
 										"format": "date-time",
 									},
@@ -48,14 +50,12 @@ func TestExtractIntentsFromManifest(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name: "app with empty intents array",
+			name: "app with empty intents map",
 			app: App{
 				ID:   "test.app",
 				Name: "Test App",
 				Manifest: map[string]interface{}{
-					"app": map[string]interface{}{
-						"intents": []interface{}{},
-					},
+					"intents": map[string]interface{}{},
 				},
 			},
 			expected: 0,
@@ -91,26 +91,33 @@ func TestParseIntentFromMap(t *testing.T) {
 		name         string
 		appID        string
 		appName      string
+		intentID     string
 		intentMap    map[string]interface{}
 		expectedID   string
 		expectedDesc string
 		expectedReq  int
 	}{
 		{
-			name:    "intent with required and optional properties",
-			appID:   "test.app",
-			appName: "Test App",
+			name:     "intent with required and optional properties",
+			appID:    "test.app",
+			appName:  "Test App",
+			intentID: "view-trace",
 			intentMap: map[string]interface{}{
-				"id":          "view-trace",
+				"name":        "View Trace",
 				"description": "View distributed trace",
 				"properties": map[string]interface{}{
 					"trace_id": map[string]interface{}{
-						"type":     "string",
 						"required": true,
+						"schema": map[string]interface{}{
+							"type": "string",
+						},
 					},
 					"timestamp": map[string]interface{}{
-						"type":   "string",
-						"format": "date-time",
+						"required": false,
+						"schema": map[string]interface{}{
+							"type":   "string",
+							"format": "date-time",
+						},
 					},
 				},
 			},
@@ -119,11 +126,11 @@ func TestParseIntentFromMap(t *testing.T) {
 			expectedReq:  1,
 		},
 		{
-			name:    "intent with no properties",
-			appID:   "test.app",
-			appName: "Test App",
+			name:     "intent with no properties",
+			appID:    "test.app",
+			appName:  "Test App",
+			intentID: "simple-intent",
 			intentMap: map[string]interface{}{
-				"id":          "simple-intent",
 				"description": "Simple intent",
 			},
 			expectedID:   "simple-intent",
@@ -134,7 +141,7 @@ func TestParseIntentFromMap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			intent := parseIntentFromMap(tt.appID, tt.appName, tt.intentMap)
+			intent := parseIntentFromMap(tt.appID, tt.appName, tt.intentID, tt.intentMap)
 
 			if intent.IntentID != tt.expectedID {
 				t.Errorf("expected IntentID %q, got %q", tt.expectedID, intent.IntentID)
