@@ -321,6 +321,34 @@ dtctl logs wfe exec-456 --all
 dtctl logs wfe exec-456 --task check_errors
 ```
 
+### Watch Workflows
+
+Monitor workflows in real-time with watch mode:
+
+```bash
+# Watch all workflows for changes
+dtctl get workflows --watch
+
+# Watch with custom polling interval (default: 2s)
+dtctl get workflows --watch --interval 5s
+
+# Watch specific workflow
+dtctl get workflow my-workflow --watch
+
+# Watch only your workflows
+dtctl get workflows --mine --watch
+
+# Only show changes (skip initial state)
+dtctl get workflows --watch --watch-only
+```
+
+**Watch mode features:**
+- `+` (green) prefix for newly added workflows
+- `~` (yellow) prefix for modified workflows
+- `-` (red) prefix for deleted workflows
+- Graceful shutdown with Ctrl+C
+- Automatic retry on transient errors
+
 ### Delete Workflows
 
 ```bash
@@ -528,6 +556,24 @@ dtctl restore notebook "Weekly Analysis" 3 --force
 - Snapshots auto-delete after 30 days
 - Only the document owner can restore snapshots
 - Restoring automatically creates a snapshot of the current state before restoring
+
+### Watch Documents
+
+Monitor dashboards and notebooks for changes in real-time:
+
+```bash
+# Watch all dashboards
+dtctl get dashboards --watch
+
+# Watch your own dashboards
+dtctl get dashboards --mine --watch
+
+# Watch notebooks with custom interval
+dtctl get notebooks --watch --interval 10s
+
+# Watch with name filter
+dtctl get dashboards --name "production" --watch
+```
 
 ### Delete Documents
 
@@ -830,6 +876,36 @@ dtctl query "fetch logs" \
 - Feeding data into external analysis tools
 - Generating reports from DQL query results
 
+### Watch Query Results
+
+Monitor DQL query results in real-time with watch mode:
+
+```bash
+# Watch query results for changes
+dtctl query "fetch logs | filter status='ERROR'" --watch
+
+# Watch with custom interval (default: 2s for watch mode)
+dtctl query "fetch logs" --watch --interval 5s
+
+# Only show changes (skip initial results)
+dtctl query "fetch logs" --watch --watch-only
+
+# Watch timeseries data
+dtctl query "timeseries avg(dt.host.cpu.usage)" --watch --interval 10s
+```
+
+**Watch vs Live Mode:**
+- `--watch`: Incremental updates showing only changes (additions, modifications, deletions)
+- `--live`: Full screen refresh with periodic updates (better for charts)
+
+```bash
+# Watch mode - shows changes incrementally
+dtctl query "fetch logs | filter status='ERROR'" --watch
+
+# Live mode - full refresh with charts
+dtctl query "timeseries avg(dt.host.cpu.usage)" -o chart --live
+```
+
 ### Query Warnings
 
 DQL queries may return warnings (e.g., scan limits reached, results truncated). These warnings are printed to **stderr**, keeping stdout clean for data processing.
@@ -943,6 +1019,21 @@ dtctl exec slo slo-123 -o json | jq '.evaluationResults[].errorBudget'
 dtctl exec slo slo-123
 ```
 
+### Watch SLOs
+
+Monitor SLO status changes in real-time:
+
+```bash
+# Watch all SLOs
+dtctl get slos --watch
+
+# Watch with custom interval
+dtctl get slos --watch --interval 30s
+
+# Watch with filter
+dtctl get slos --filter 'name~production' --watch
+```
+
 ### Delete SLOs
 
 ```bash
@@ -973,6 +1064,18 @@ dtctl get notification notif-123
 
 # Detailed view
 dtctl describe notification notif-123
+```
+
+### Watch Notifications
+
+Monitor notifications in real-time:
+
+```bash
+# Watch all notifications
+dtctl get notifications --watch
+
+# Watch specific notification type
+dtctl get notifications --type EMAIL --watch
 ```
 
 ### Delete Notifications
@@ -1019,6 +1122,18 @@ displayName: Production Logs
 table: logs
 retentionDays: 35
 status: active
+```
+
+### Watch Buckets
+
+Monitor bucket changes in real-time:
+
+```bash
+# Watch all buckets
+dtctl get buckets --watch
+
+# Watch with custom interval
+dtctl get buckets --watch --interval 10s
 ```
 
 ### Delete Buckets

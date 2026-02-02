@@ -39,16 +39,16 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Resources
 
-| Resource | get | describe | create | delete | edit | apply | exec | logs | share | history | restore | --mine |
-|----------|-----|----------|--------|--------|------|-------|------|------|-------|---------|---------|--------|
-| **workflow** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ |
-| **execution** | ✅ | ✅ | - | - | - | - | - | ✅ | - | - | - | - |
-| **dashboard** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
-| **notebook** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
-| **slo** | ✅ | ✅ | ✅ | ✅ | - | ✅ | ✅ | - | - | - | - | - |
-| **slo-template** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
-| **notification** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
-| **bucket** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
+| Resource | get | describe | create | delete | edit | apply | exec | logs | share | history | restore | --mine | --watch |
+|----------|-----|----------|--------|--------|------|-------|------|------|-------|---------|---------|--------|---------|
+| **workflow** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ |
+| **execution** | ✅ | ✅ | - | - | - | - | - | ✅ | - | - | - | - | ✅ |
+| **dashboard** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **notebook** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **slo** | ✅ | ✅ | ✅ | ✅ | - | ✅ | ✅ | - | - | - | - | - | ✅ |
+| **slo-template** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - | - |
+| **notification** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - | ✅ |
+| **bucket** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | ✅ |
 | **settings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - |
 | **app** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
 | **function** | ✅ | ✅ | - | - | - | - | ✅ | - | - | - | - | - |
@@ -60,6 +60,20 @@ This document tracks the current implementation status of dtctl. For future plan
 | **lookup** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
 | **intent** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 
+### Watch Mode Features
+- [x] Watch all `get` commands: `dtctl get workflows --watch`
+- [x] Watch DQL queries: `dtctl query "fetch logs" --watch`
+- [x] Configurable polling interval: `--interval` (default: 2s, min: 1s)
+- [x] Skip initial state: `--watch-only`
+- [x] Incremental change display with kubectl-style prefixes:
+  - `+` (green) for additions
+  - `~` (yellow) for modifications
+  - `-` (red) for deletions
+- [x] Graceful shutdown on Ctrl+C
+- [x] Automatic retry on transient errors (timeouts, rate limits, network issues)
+- [x] Memory-efficient (only stores last state)
+- [x] Works with existing filters and flags (e.g., `--mine`, `--name`)
+
 ### DQL Query Features
 - [x] Inline queries: `dtctl query "fetch logs | limit 10"`
 - [x] File-based queries: `dtctl query -f query.dql`
@@ -67,6 +81,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] All output formats supported
 - [x] Chart output for timeseries: `dtctl query "timeseries ..." -o chart`
 - [x] Live mode with periodic updates: `--live`, `--interval`
+- [x] Watch mode with incremental updates: `--watch`, `--interval`
 - [x] Customizable chart dimensions: `--width`, `--height`, `--fullscreen`
 - [x] Custom record/byte/scan limits
 

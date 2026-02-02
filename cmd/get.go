@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/prompt"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/analyzer"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/appengine"
@@ -18,6 +24,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/watch"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +34,62 @@ var getCmd = &cobra.Command{
 	Short: "Display one or many resources",
 	Long:  `Display one or many resources such as workflows, dashboards, notebooks, SLOs, etc.`,
 	RunE:  requireSubcommand,
+}
+
+// executeWithWatch wraps a fetcher function with watch mode support
+func executeWithWatch(cmd *cobra.Command, fetcher watch.ResourceFetcher, printer interface{}) error {
+	watchMode, _ := cmd.Flags().GetBool("watch")
+	if !watchMode {
+		return nil
+	}
+
+	interval, _ := cmd.Flags().GetDuration("interval")
+	watchOnly, _ := cmd.Flags().GetBool("watch-only")
+
+	if interval < time.Second {
+		interval = 2 * time.Second
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	c, err := NewClientFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	// Wrap the printer with WatchPrinter to maintain output format
+	basePrinter := printer.(output.Printer)
+	watchPrinter := output.NewWatchPrinter(basePrinter)
+
+	watcher := watch.NewWatcher(watch.WatcherOptions{
+		Interval:    interval,
+		Client:      c,
+		Fetcher:     fetcher,
+		Printer:     watchPrinter,
+		ShowInitial: !watchOnly,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	return watcher.Start(ctx)
+}
+
+// addWatchFlags adds watch-related flags to a command
+func addWatchFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("watch", false, "Watch for changes")
+	cmd.Flags().Duration("interval", 2*time.Second, "Polling interval (minimum: 1s)")
+	cmd.Flags().Bool("watch-only", false, "Only show changes, not initial state")
 }
 
 // getWorkflowsCmd retrieves workflows
@@ -84,6 +147,19 @@ Examples:
 				return fmt.Errorf("failed to get current user ID for --mine filter: %w", err)
 			}
 			filters.Owner = userID
+		}
+
+		// Check if watch mode is enabled
+		watchMode, _ := cmd.Flags().GetBool("watch")
+		if watchMode {
+			fetcher := func() (interface{}, error) {
+				list, err := handler.List(filters)
+				if err != nil {
+					return nil, err
+				}
+				return list.Results, nil
+			}
+			return executeWithWatch(cmd, fetcher, printer)
 		}
 
 		list, err := handler.List(filters)
@@ -1800,6 +1876,15 @@ func init() {
 	deleteCmd.AddCommand(deleteSettingsCmd)
 	deleteCmd.AddCommand(deleteAppCmd)
 	deleteCmd.AddCommand(deleteEdgeConnectCmd)
+
+	// Watch flags for get commands
+	addWatchFlags(getWorkflowsCmd)
+	addWatchFlags(getWorkflowExecutionsCmd)
+	addWatchFlags(getDashboardsCmd)
+	addWatchFlags(getNotebooksCmd)
+	addWatchFlags(getSLOsCmd)
+	addWatchFlags(getNotificationsCmd)
+	addWatchFlags(getBucketsCmd)
 
 	getWorkflowExecutionsCmd.Flags().StringVarP(&workflowFilter, "workflow", "w", "", "Filter executions by workflow ID")
 	getWorkflowsCmd.Flags().Bool("mine", false, "Show only workflows owned by current user")

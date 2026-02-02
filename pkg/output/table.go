@@ -207,9 +207,16 @@ func (p *TablePrinter) PrintList(obj interface{}) error {
 	if first.Kind() == reflect.Ptr {
 		first = first.Elem()
 	}
+	// Unwrap interface{} to get the actual value
+	if first.Kind() == reflect.Interface {
+		first = first.Elem()
+		if first.Kind() == reflect.Ptr {
+			first = first.Elem()
+		}
+	}
 
 	// Handle slice of maps (e.g., from DQL results or lookup tables)
-	if first.Kind() == reflect.Map || (first.Kind() == reflect.Interface && first.Elem().Kind() == reflect.Map) {
+	if first.Kind() == reflect.Map {
 		return p.printMaps(v, table)
 	}
 
@@ -236,6 +243,13 @@ func (p *TablePrinter) PrintList(obj interface{}) error {
 		elem := v.Index(i)
 		if elem.Kind() == reflect.Ptr {
 			elem = elem.Elem()
+		}
+		// Unwrap interface{} to get the actual value
+		if elem.Kind() == reflect.Interface {
+			elem = elem.Elem()
+			if elem.Kind() == reflect.Ptr {
+				elem = elem.Elem()
+			}
 		}
 
 		var row []string

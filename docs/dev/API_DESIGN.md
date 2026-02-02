@@ -98,6 +98,42 @@ Design features specifically to help LLMs drive the tool.
 ### 8. Resource-Oriented Design
 - Every Dynatrace API concept is exposed as a resource
 - Resources have standard CRUD operations where applicable
+
+### 9. Watch Mode Pattern
+
+**Philosophy**: Enable real-time monitoring without custom query filters.
+
+**Implementation**:
+- Add `--watch`, `--interval`, and `--watch-only` flags to all `get` commands
+- Use polling with configurable intervals (default: 2s, minimum: 1s)
+- Display incremental changes with kubectl-style prefixes:
+  - `+` (green) for additions
+  - `~` (yellow) for modifications
+  - `-` (red) for deletions
+- Graceful shutdown on Ctrl+C via context cancellation
+- Automatic retry on transient errors (timeouts, rate limits, network issues)
+
+**Usage Pattern**:
+```bash
+# Watch workflows
+dtctl get workflows --watch
+
+# Watch with custom interval
+dtctl get workflows --watch --interval 5s
+
+# Watch query results
+dtctl query "fetch logs | filter status='ERROR'" --watch
+
+# Only show changes (skip initial state)
+dtctl get workflows --watch --watch-only
+```
+
+**Design Decisions**:
+- ✅ Use polling (simple, universal compatibility)
+- ❌ WebSocket streaming (limited API support, complex implementation)
+- ✅ Incremental updates (better UX than full refresh)
+- ✅ Memory-efficient (only store last state)
+- ✅ Works with existing filters and flags
 - Resources can have sub-resources (e.g., `workflow/executions`)
 - Resources support filtering, sorting, and field selection
 
