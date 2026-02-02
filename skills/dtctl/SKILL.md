@@ -13,7 +13,7 @@ dtctl <verb> <resource> [name/id] [flags]
 
 **Verbs:** get, describe, create, edit, apply, delete, exec, query, logs, wait, history, restore, share/unshare
 
-**Key Resources:** workflow (wf), dashboard (dash), notebook (nb), slo, bucket (bkt), lookup (lkup), settings, analyzer (az), copilot (cp)
+**Key Resources:** workflow (wf), dashboard (dash), notebook (nb), slo, bucket (bkt), lookup (lkup), settings, function (fn), analyzer (az), copilot (cp)
 
 **Global Flags:**
 - `--context` - Switch environment
@@ -101,6 +101,16 @@ dtctl get analyzers
 dtctl exec analyzer dt.statistics.GenericForecastAnalyzer --query "timeseries avg(dt.host.cpu.usage)" -o chart
 dtctl exec copilot "What caused the CPU spike?"
 dtctl exec copilot nl2dql "show error logs from last hour"
+```
+
+### App Functions
+```bash
+dtctl get functions                                       # List all functions
+dtctl get functions --app dynatrace.slack                 # Filter by app
+dtctl get functions -o wide                               # Show descriptions
+dtctl describe function dynatrace.slack/slack-send-message
+dtctl exec function dynatrace.slack/slack-send-message --method POST --payload '{"channel":"#alerts","message":"test"}'
+dtctl exec function dynatrace.automations/execute-dql-query --method POST --data @query.json
 ```
 
 ## Template Variables

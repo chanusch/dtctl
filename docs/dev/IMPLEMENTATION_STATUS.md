@@ -51,7 +51,7 @@ This document tracks the current implementation status of dtctl. For future plan
 | **bucket** | ✅ | ✅ | ✅ | ✅ | - | ✅ | - | - | - | - | - | - |
 | **settings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - |
 | **app** | ✅ | ✅ | - | ✅ | - | - | - | - | - | - | - | - |
-| **function** | ✅ | - | - | - | - | - | ✅ | - | - | - | - | - |
+| **function** | ✅ | ✅ | - | - | - | - | ✅ | - | - | - | - | - |
 | **edgeconnect** | ✅ | ✅ | ✅ | ✅ | - | - | - | - | - | - | - | - |
 | **user** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
 | **group** | ✅ | ✅ | - | - | - | - | - | - | - | - | - | - |
@@ -86,6 +86,15 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] NL to DQL: `dtctl exec copilot nl2dql "show error logs"`
 - [x] Document search: `dtctl exec copilot document-search "query"`
 
+### App Functions Features
+- [x] List all functions: `dtctl get functions`
+- [x] Filter by app: `dtctl get functions --app <app-id>`
+- [x] Get function details: `dtctl get function <app-id>/<function-name>`
+- [x] Describe function: `dtctl describe function <app-id>/<function-name>`
+- [x] Execute functions: `dtctl exec function <app-id>/<function-name>`
+- [x] Function metadata: title, description, resumable, stateful flags
+- [x] Wide output with all metadata
+
 ### Wait Features
 - [x] Wait for DQL query conditions: `dtctl wait query`
 - [x] Supported conditions: count=N, count-gte, count-gt, count-lte, count-lt, any, none
@@ -115,7 +124,6 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Resource Gaps
 - [ ] Document trash (list/restore deleted)
-- [ ] Function describe
 
 ---
 

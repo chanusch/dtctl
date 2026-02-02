@@ -1615,7 +1615,7 @@ See [TOKEN_SCOPES.md](TOKEN_SCOPES.md) for complete scope lists by safety level.
 
 ## App Engine
 
-Manage Dynatrace apps and functions.
+Manage Dynatrace apps and their serverless functions.
 
 ### List and View Apps
 
@@ -1632,6 +1632,152 @@ dtctl get app app-123
 # Detailed view
 dtctl describe app app-123
 ```
+
+### App Functions
+
+App functions are serverless backend functions exposed by installed apps. They can be invoked via HTTP to perform various operations like sending notifications, querying external APIs, or executing custom logic.
+
+#### Discover Functions
+
+```bash
+# List all functions across all installed apps
+dtctl get functions
+
+# List functions for a specific app
+dtctl get functions --app dynatrace.slack
+
+# Show function descriptions and metadata (wide output)
+dtctl get functions --app dynatrace.automations -o wide
+
+# Get details about a specific function
+dtctl get function dynatrace.slack/slack-send-message
+
+# Describe a function (shows usage examples)
+dtctl describe function dynatrace.automations/execute-dql-query
+```
+
+**Example output:**
+```
+Function:     execute-dql-query
+Full Name:    dynatrace.automations/execute-dql-query
+Title:        Execute DQL Query
+Description:  Make use of Dynatrace Grail data in your workflow.
+App:          Workflows (dynatrace.automations)
+Resumable:    false
+Stateful:     true
+
+Usage:
+  dtctl exec function dynatrace.automations/execute-dql-query
+```
+
+#### Execute Functions
+
+```bash
+# Execute a function with GET method (default)
+dtctl exec function dynatrace.slack/slack-send-message
+
+# Execute with POST and JSON payload
+dtctl exec function dynatrace.slack/slack-send-message \
+  --method POST \
+  --payload '{"channel":"#alerts","message":"Test message"}'
+
+# Execute with payload from file
+dtctl exec function dynatrace.github.connector/create-issue \
+  --method POST \
+  --data @issue.json
+
+# Execute and output as JSON
+dtctl exec function dynatrace.abuseipdb/check-ip \
+  --method POST \
+  --payload '{"ip":"8.8.8.8"}' \
+  -o json
+```
+
+**Example payload file** (`slack-message.json`):
+```json
+{
+  "channel": "#production-alerts",
+  "message": "Service health check completed successfully",
+  "attachments": [
+    {
+      "color": "good",
+      "title": "Health Status",
+      "text": "All systems operational"
+    }
+  ]
+}
+```
+
+#### Common Use Cases
+
+**1. Send Slack notifications:**
+```bash
+# Discover Slack functions
+dtctl get functions --app dynatrace.slack
+
+# Send a message
+dtctl exec function dynatrace.slack/slack-send-message \
+  --method POST \
+  --payload '{"channel":"#alerts","message":"CPU threshold exceeded"}'
+```
+
+**2. Create GitHub issues:**
+```bash
+# List GitHub connector functions
+dtctl get functions --app dynatrace.github.connector
+
+# Create an issue
+dtctl exec function dynatrace.github.connector/create-issue \
+  --method POST \
+  --data @github-issue.json
+```
+
+**3. Execute DQL queries from workflows:**
+```bash
+# Execute a DQL query via workflow action
+dtctl exec function dynatrace.automations/execute-dql-query \
+  --method POST \
+  --payload '{"query":"fetch logs | filter status='\''ERROR'\'' | limit 10"}'
+```
+
+**4. Send emails:**
+```bash
+# List email functions
+dtctl get functions --app dynatrace.email
+
+# Send an email
+dtctl exec function dynatrace.email/send-email \
+  --method POST \
+  --payload '{"to":"team@example.com","subject":"Alert","body":"Issue detected"}'
+```
+
+#### Tips for Working with Functions
+
+**Discover available functions:**
+```bash
+# Find all functions related to notifications
+dtctl get functions | grep -i "send\|notify\|message"
+
+# Export function inventory
+dtctl get functions -o json > functions-inventory.json
+
+# Find functions by app
+dtctl get functions --app dynatrace.automations -o wide
+```
+
+**Test functions interactively:**
+```bash
+# Use jq to format responses
+dtctl exec function myapp/myfunction -o json | jq .
+
+# Check function response codes
+dtctl exec function myapp/test-connection --method POST --payload '{}'
+```
+
+**Required Token Scopes:**
+- `app-engine:apps:run` - Execute app functions
+
+See [TOKEN_SCOPES.md](TOKEN_SCOPES.md) for complete scope lists.
 
 ### Delete Apps
 

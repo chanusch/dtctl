@@ -1065,6 +1065,7 @@ func init() {
 	describeCmd.AddCommand(describeBucketCmd)
 	describeCmd.AddCommand(describeLookupCmd)
 	describeCmd.AddCommand(describeAppCmd)
+	describeCmd.AddCommand(describeFunctionCmd)
 	describeCmd.AddCommand(describeEdgeConnectCmd)
 	describeCmd.AddCommand(describeUserCmd)
 	describeCmd.AddCommand(describeGroupCmd)

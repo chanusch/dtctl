@@ -132,7 +132,10 @@ type AppFunction struct {
 	AppID        string `json:"appId" table:"APP_ID,wide"`
 	AppName      string `json:"appName" table:"APP"`
 	FunctionName string `json:"functionName" table:"FUNCTION"`
+	Title        string `json:"title,omitempty" table:"TITLE,wide"`
+	Description  string `json:"description,omitempty" table:"DESCRIPTION,wide"`
 	Resumable    bool   `json:"resumable" table:"RESUMABLE,wide"`
+	Stateful     bool   `json:"stateful,omitempty" table:"STATEFUL,wide"`
 	FullName     string `json:"fullName" table:"FULL_NAME"`
 }
 
@@ -167,6 +170,31 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 
 		// Extract functions from manifest
 		if detailedApp.Manifest != nil {
+			// First, build a map of action metadata by function name
+			actionMetadata := make(map[string]struct {
+				title       string
+				description string
+				stateful    bool
+			})
+
+			if actionsArray, ok := detailedApp.Manifest["actions"].([]interface{}); ok {
+				for _, action := range actionsArray {
+					if actionMap, ok := action.(map[string]interface{}); ok {
+						name, _ := actionMap["name"].(string)
+						title, _ := actionMap["title"].(string)
+						description, _ := actionMap["description"].(string)
+						stateful, _ := actionMap["stateful"].(bool)
+
+						actionMetadata[name] = struct {
+							title       string
+							description string
+							stateful    bool
+						}{title, description, stateful}
+					}
+				}
+			}
+
+			// Now extract functions and merge with action metadata
 			if functionsMap, ok := detailedApp.Manifest["functions"].(map[string]interface{}); ok {
 				for functionName, functionData := range functionsMap {
 					resumable := false
@@ -176,11 +204,17 @@ func (h *Handler) ListFunctions(appIDFilter string) ([]AppFunction, error) {
 						}
 					}
 
+					// Get action metadata if available
+					metadata := actionMetadata[functionName]
+
 					functions = append(functions, AppFunction{
 						AppID:        detailedApp.ID,
 						AppName:      detailedApp.Name,
 						FunctionName: functionName,
+						Title:        metadata.title,
+						Description:  metadata.description,
 						Resumable:    resumable,
+						Stateful:     metadata.stateful,
 						FullName:     fmt.Sprintf("%s/%s", detailedApp.ID, functionName),
 					})
 				}
@@ -212,6 +246,24 @@ func (h *Handler) GetFunction(fullName string) (*AppFunction, error) {
 
 	// Find the function in the manifest
 	if app.Manifest != nil {
+		// First, get action metadata if available
+		var title, description string
+		var stateful bool
+
+		if actionsArray, ok := app.Manifest["actions"].([]interface{}); ok {
+			for _, action := range actionsArray {
+				if actionMap, ok := action.(map[string]interface{}); ok {
+					if name, _ := actionMap["name"].(string); name == functionName {
+						title, _ = actionMap["title"].(string)
+						description, _ = actionMap["description"].(string)
+						stateful, _ = actionMap["stateful"].(bool)
+						break
+					}
+				}
+			}
+		}
+
+		// Now get function data
 		if functionsMap, ok := app.Manifest["functions"].(map[string]interface{}); ok {
 			if functionData, ok := functionsMap[functionName]; ok {
 				resumable := false
@@ -225,7 +277,10 @@ func (h *Handler) GetFunction(fullName string) (*AppFunction, error) {
 					AppID:        app.ID,
 					AppName:      app.Name,
 					FunctionName: functionName,
+					Title:        title,
+					Description:  description,
 					Resumable:    resumable,
+					Stateful:     stateful,
 					FullName:     fullName,
 				}, nil
 			}
