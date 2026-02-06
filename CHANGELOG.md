@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **Command structure refactoring**: Changed `dtctl query verify` to `dtctl verify query` for better consistency with kubectl-style verb-noun pattern. This establishes the `verify` command as a top-level verb for validation operations across different resource types (query, analyzer, settings, etc.). This change was made before the initial release, so no backward compatibility is needed.
+## [0.10.0] - 2026-02-06
 
 ### Added
 - New `dtctl verify` parent command for verification operations
-- `dtctl verify query` subcommand with all existing DQL query verification functionality
+- `dtctl verify query` subcommand for DQL query validation without execution
+  - Multiple input methods: inline, file, stdin, piped
+  - Template variable support with `--set` flag
+  - Human-readable output with colored indicators and error carets
+  - Structured output formats (JSON, YAML)
+  - Canonical query representation with `--canonical` flag
+  - Timezone and locale support
+  - CI/CD-friendly `--fail-on-warn` flag
+  - Semantic exit codes (0=valid, 1=invalid, 2=auth, 3=network)
+  - Comprehensive test coverage (11 unit tests + 6 command tests + 13 E2E tests)
 
-### Removed
-- `dtctl query verify` subcommand (moved to `dtctl verify query`)
+### Changed
+- Updated Go version to 1.24.13 in security workflow
+
+[Unreleased]: https://github.com/dynatrace-oss/dtctl/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/dynatrace-oss/dtctl/compare/v0.9.0...v0.10.0
