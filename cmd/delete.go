@@ -97,7 +97,7 @@ var deleteAzureMonitoringConfigCmd = &cobra.Command{
 
 		objectID := identifier
 
-		// Try to find by name (description) first to resolve ID if it's a name
+		// Try to find by description first to resolve ID if it's a name
 		item, err := handler.FindByName(identifier)
 		if err == nil {
 			// Found by name
