@@ -58,9 +58,9 @@ func (v Value) String() string {
 
 	if v.ClientSecret != nil {
 		// Mask the secret to prevent leaking it in terminal/logs
-		secret := "[REDACTED]"
-		if v.ClientSecret.ClientSecret == "" {
-			secret = ""
+		secret := ""
+		if v.ClientSecret.ClientSecret != "" {
+			secret = "[REDACTED]"
 		}
 		s += fmt.Sprintf(" dirId=%s appId=%s secret=%s consumers=%v",
 			v.ClientSecret.DirectoryID,
