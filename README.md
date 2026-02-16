@@ -20,7 +20,7 @@ dtctl apply -f workflow.yaml                  # Declarative configuration
 
 ![dtctl dashboard workflow demo](docs/assets/dtctl-1.gif)
 
-> This product is not officially supported by Dynatrace
+> **Early Development**: This project is in active development. If you encounter any bugs or issues, please [file a GitHub issue](https://github.com/dynatrace-oss/dtctl/issues/new). Contributions and feedback are welcome!
 
 ## Why dtctl?
 
