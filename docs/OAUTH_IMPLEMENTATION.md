@@ -71,6 +71,18 @@ The implementation uses OAuth 2.0 with PKCE for enhanced security:
 - Automatic token refresh when within 5 minutes of expiration
 - Refresh tokens used to obtain new access tokens
 - Token expiration tracking for proactive refresh
+- Keyring payload size fallback: if a backend rejects a full token record (for example with `data passed to Set was too big`), dtctl stores a compact record (refresh token + metadata) and refreshes access token on demand
+
+### Keyring Size-Limit Behavior
+
+Some keyring backends impose per-item size limits. With large OAuth responses (for example many scopes and/or large JWTs), saving the full serialized token set may fail.
+
+dtctl now handles this automatically:
+- First tries to store the full token set in keyring
+- If the keyring reports an oversized-value error, stores a compact token representation instead
+- On the next token read, detects compact storage and performs refresh immediately using the stored refresh token
+
+Result: `dtctl auth login` succeeds even when keyring item size limits are reached, while tokens remain keyring-backed.
 
 ### Local Callback Server
 - Starts temporary HTTP server on `localhost:3232`
@@ -227,3 +239,19 @@ dtctl auth logout production
 - OS keyring provides encrypted storage
 - Automatic token refresh reduces manual token handling
 - Local callback server only accessible from localhost
+
+## Troubleshooting
+
+### Error: `failed to save token to keyring: ... data passed to Set was too big`
+
+This indicates a keyring item size limit was hit while saving the full OAuth token payload.
+
+Current behavior:
+- dtctl automatically falls back to compact token storage in keyring
+- Subsequent command execution refreshes access token as needed
+
+If this error still appears after upgrading, ensure you are running the latest build from this branch and re-run:
+
+```bash
+dtctl auth login --context <name> --environment <url>
+```

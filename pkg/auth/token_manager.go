@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/config"
@@ -54,6 +55,15 @@ func (tm *TokenManager) GetToken(tokenName string) (string, error) {
 	stored, err := tm.loadToken(tokenName)
 	if err != nil {
 		return "", err
+	}
+
+	// If only refresh token is stored (compact keyring format), refresh immediately
+	if stored.AccessToken == "" && stored.RefreshToken != "" {
+		refreshed, err := tm.RefreshToken(tokenName)
+		if err != nil {
+			return "", fmt.Errorf("failed to refresh token from compact storage: %w", err)
+		}
+		return refreshed.AccessToken, nil
 	}
 	
 	// Check if token needs refresh
@@ -184,12 +194,48 @@ func (tm *TokenManager) saveToken(tokenName string, stored *StoredToken) error {
 	// Save to keyring
 	if config.IsKeyringAvailable() {
 		if err := tm.tokenStore.SetToken(keyringName, string(data)); err != nil {
+			if isOversizedKeyringError(err) {
+				compact := compactStoredTokenForKeyring(stored)
+				compactData, marshalErr := json.Marshal(compact)
+				if marshalErr != nil {
+					return fmt.Errorf("failed to serialize compact token: %w", marshalErr)
+				}
+				if compactErr := tm.tokenStore.SetToken(keyringName, string(compactData)); compactErr != nil {
+					return fmt.Errorf("failed to save compact token to keyring: %w", compactErr)
+				}
+				return nil
+			}
 			return fmt.Errorf("failed to save token to keyring: %w", err)
 		}
 		return nil
 	}
 	
 	return fmt.Errorf("OAuth tokens require keyring support (not available on this system)")
+}
+
+func compactStoredTokenForKeyring(stored *StoredToken) *StoredToken {
+	if stored == nil {
+		return nil
+	}
+
+	compact := *stored
+	compact.AccessToken = ""
+	compact.IDToken = ""
+	compact.Scope = ""
+	compact.ExpiresIn = 0
+	compact.ExpiresAt = time.Time{}
+	return &compact
+}
+
+func isOversizedKeyringError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "too big") ||
+		strings.Contains(errText, "too large") ||
+		strings.Contains(errText, "maximum")
 }
 
 // getKeyringName returns the keyring storage name for a token

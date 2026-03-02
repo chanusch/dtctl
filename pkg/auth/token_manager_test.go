@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 )
@@ -150,5 +152,89 @@ func TestTokenManager_EnvironmentIsolation(t *testing.T) {
 	}
 	if hardKey != expectedHard {
 		t.Errorf("Hardening key = %v, want %v", hardKey, expectedHard)
+	}
+}
+
+func TestIsOversizedKeyringError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "too big message",
+			err:  fmt.Errorf("data passed to Set was too big"),
+			want: true,
+		},
+		{
+			name: "too large message",
+			err:  fmt.Errorf("value too large for keychain item"),
+			want: true,
+		},
+		{
+			name: "unrelated message",
+			err:  fmt.Errorf("permission denied"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isOversizedKeyringError(tt.err); got != tt.want {
+				t.Errorf("isOversizedKeyringError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompactStoredTokenForKeyring(t *testing.T) {
+	expiresAt := time.Now().Add(30 * time.Minute).UTC()
+	stored := &StoredToken{
+		Name: "my-token",
+		TokenSet: TokenSet{
+			AccessToken:  "access",
+			RefreshToken: "refresh",
+			IDToken:      "id",
+			TokenType:    "Bearer",
+			ExpiresIn:    1800,
+			Scope:        "openid profile",
+			ExpiresAt:    expiresAt,
+		},
+	}
+
+	compact := compactStoredTokenForKeyring(stored)
+	if compact == nil {
+		t.Fatalf("compactStoredTokenForKeyring() returned nil")
+	}
+
+	if compact.Name != stored.Name {
+		t.Errorf("Name = %q, want %q", compact.Name, stored.Name)
+	}
+	if compact.RefreshToken != stored.RefreshToken {
+		t.Errorf("RefreshToken = %q, want %q", compact.RefreshToken, stored.RefreshToken)
+	}
+	if compact.TokenType != stored.TokenType {
+		t.Errorf("TokenType = %q, want %q", compact.TokenType, stored.TokenType)
+	}
+
+	if compact.AccessToken != "" {
+		t.Errorf("AccessToken = %q, want empty", compact.AccessToken)
+	}
+	if compact.IDToken != "" {
+		t.Errorf("IDToken = %q, want empty", compact.IDToken)
+	}
+	if compact.Scope != "" {
+		t.Errorf("Scope = %q, want empty", compact.Scope)
+	}
+	if compact.ExpiresIn != 0 {
+		t.Errorf("ExpiresIn = %d, want 0", compact.ExpiresIn)
+	}
+	if !compact.ExpiresAt.IsZero() {
+		t.Errorf("ExpiresAt = %v, want zero value", compact.ExpiresAt)
 	}
 }
