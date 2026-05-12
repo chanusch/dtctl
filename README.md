@@ -16,6 +16,7 @@ dtctl query "fetch logs | limit 10"           # Run DQL queries
 dtctl apply -f workflow.yaml --set env=prod   # Declarative configuration
 dtctl get dashboards -o json                  # Structured output for automation
 dtctl exec copilot nl2dql "error logs from last hour"
+echo 'my.metric,host=demo gauge,42' | dtctl ingest metric  # Push metrics
 ```
 
 ![dtctl dashboard workflow demo](docs/assets/dtctl-1.gif)
@@ -89,6 +90,7 @@ Token-based authentication and multi-environment configuration are covered in th
 | Notifications | get, describe, delete, watch |
 | Users & Groups | get, describe |
 | Live Debugger | breakpoints, workspace filters, snapshot decoding |
+| Metric Ingestion | ingest line-protocol data or OTLP payloads (auto-chunked, OTLP JSON/proto passthrough) |
 
 See the **[Command Reference](https://dynatrace-oss.github.io/dtctl/docs/command-reference/)** for the full list of verbs, flags, resource types, and aliases.
 

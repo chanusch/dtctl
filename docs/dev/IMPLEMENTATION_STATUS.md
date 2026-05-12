@@ -49,6 +49,7 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] `doctor` - Health check (config, context, token, connectivity, auth)
 - [x] `commands` - Machine-readable command catalog (JSON/YAML, `--brief`, resource filter, `howto` subcommand)
 - [x] `skills` - AI agent skill file management (install, uninstall, status for Claude, Copilot, Cursor, Kiro, Junie, OpenCode, OpenClaw; cross-client via `--cross-client`)
+- [x] `ingest` - Push telemetry data into Dynatrace (metric data points via line protocol or OTLP passthrough)
 
 ### Resources
 
@@ -186,6 +187,19 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Source defaults to `"dtctl"` when omitted
 - [x] Recent problems cross-reference via DQL in describe output
 - [x] Template variables: `--set threshold=95`
+
+### Metric Ingestion Features
+- [x] Ingest line-protocol data: `dtctl ingest metric -f metrics.lp` or via stdin
+- [x] Auto-chunking: payloads ≥ 1 000 data lines or ≥ 1 MB are split automatically into multiple POSTs
+- [x] OTLP/JSON passthrough: `dtctl ingest metric -f payload.json --format otlp-json`
+- [x] OTLP/protobuf passthrough: `dtctl ingest metric -f payload.pb --format otlp-proto`
+- [x] `partial_success` surfaced for both OTLP formats (JSON via stdlib, proto via protowire — no new deps)
+- [x] Dry-run preview: `dtctl ingest metric -f metrics.lp --dry-run`
+- [x] Safety check (OperationCreate) — blocked by `readonly` contexts
+- [x] Table, JSON, YAML, TOON output with `LINES_OK / LINES_INVALID / CHUNKS / DURATION` (line) and `BYTES_SENT / PARTIAL_REJECTED / DURATION` (OTLP)
+- [x] Agent envelope support (`--agent` / `-A`)
+- [x] Endpoint: `POST /platform/classic/environment-api/v2/metrics/ingest` (line) and `.../otlp/v1/metrics` (OTLP)
+- [x] Required scope: `metrics.ingest` (classic) or `storage:metrics:write` (platform token)
 
 ### App Functions Features
 - [x] List all functions: `dtctl get functions`

@@ -12,6 +12,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/appengine"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/metric"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azuremonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/bucket"
@@ -2398,6 +2399,59 @@ func TestGolden_DescribeExtensionSchema(t *testing.T) {
 				t.Fatalf("Print failed: %v", err)
 			}
 			assertGolden(t, "describe/extension-schema-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_IngestMetricLine(t *testing.T) {
+	result := &metric.LineResult{
+		LinesOk:      1234,
+		LinesInvalid: 0,
+		Chunks:       2,
+		Duration:     412 * time.Millisecond,
+	}
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(result); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "ingest/metric-line-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_IngestMetricOTLP(t *testing.T) {
+	result := &metric.OTLPResult{
+		BytesSent:       18432,
+		PartialRejected: 0,
+		Duration:        219 * time.Millisecond,
+	}
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(result); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "ingest/metric-otlp-"+name, buf.String())
 		})
 	}
 }

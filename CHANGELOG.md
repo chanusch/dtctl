@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`dtctl ingest metric` — push metric data points from the CLI** — new top-level `ingest` verb with a `metric` subcommand that sends telemetry to the Dynatrace Metrics API v2; supports **line protocol** (default, `--format line`) with automatic client-side chunking at 1 000 data lines / 1 MB per POST, and **OTLP raw passthrough** (`--format otlp-json` or `--format otlp-proto`) which forwards the payload verbatim to `/api/v2/otlp/v1/metrics`; input is read from a file (`-f`) or stdin (pipe-friendly); `--dry-run` previews the chunk plan without POSTing; partial-ingest errors (`linesInvalid > 0` / OTLP `partial_success`) are surfaced and cause a non-zero exit; output is a summary table with `LINES_OK`, `LINES_INVALID`, `CHUNKS`, and `DURATION` (line protocol) or `BYTES_SENT`, `PARTIAL_REJECTED`, and `DURATION` (OTLP); all output formats (`-o json|yaml|toon`) and agent envelope (`--agent` / `-A`) are supported; requires `metrics.ingest` (classic token) or `storage:metrics:write` (platform token) scope; safety-checked (`OperationCreate`) so `readonly` contexts are blocked
+
 ## [0.27.1] - 2026-05-11
 
 ### Security
