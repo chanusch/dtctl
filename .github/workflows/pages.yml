@@ -23,9 +23,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-pages:
+    name: Check GitHub Pages Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check GitHub Pages configuration
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          api_url="https://api.github.com/repos/${{ github.repository }}/pages"
+          response_file="$RUNNER_TEMP/pages.json"
+          status_code="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$api_url")"
+
+          if [ "$status_code" = "200" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status_code" = "404" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "GitHub Pages is not configured for ${{ github.repository }}; skipping site build and deploy."
+          else
+            cat "$response_file"
+            exit 1
+          fi
+
   build:
     name: Build Jekyll Site
     runs-on: ubuntu-latest
+    needs: check-pages
+    if: needs.check-pages.outputs.enabled == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
