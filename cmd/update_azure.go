@@ -17,6 +17,7 @@ var (
 	updateAzureConnectionName          string
 	updateAzureConnectionDirectoryID   string
 	updateAzureConnectionApplicationID string
+	updateAzureConnectionClientSecret  string
 
 	updateAzureMonitoringConfigName              string
 	updateAzureMonitoringConfigLocationFiltering string
@@ -40,8 +41,12 @@ Examples:
   dtctl update azure connection <id> --directoryId "XYZ" --applicationId "ZUZ"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if updateAzureConnectionDirectoryID == "" && updateAzureConnectionApplicationID == "" {
-			return fmt.Errorf("at least one of --directoryId or --applicationId is required")
+		if updateAzureConnectionDirectoryID == "" && updateAzureConnectionApplicationID == "" && updateAzureConnectionClientSecret == "" {
+			return fmt.Errorf("at least one of --directoryId, --applicationId, or --clientSecret is required")
+		}
+
+		if len(args) == 0 && updateAzureConnectionName == "" {
+			return fmt.Errorf("provide connection ID argument or --name")
 		}
 
 		_, c, err := SetupWithSafety(safety.OperationUpdate)
@@ -58,9 +63,6 @@ Examples:
 				return err
 			}
 		} else {
-			if updateAzureConnectionName == "" {
-				return fmt.Errorf("provide connection ID argument or --name")
-			}
 			existing, err = handler.FindByName(updateAzureConnectionName)
 			if err != nil {
 				return err
@@ -70,8 +72,13 @@ Examples:
 		value := existing.Value
 		switch value.Type {
 		case "federatedIdentityCredential":
+			if updateAzureConnectionClientSecret != "" {
+				return fmt.Errorf("--clientSecret is not applicable to connections of type federatedIdentityCredential")
+			}
 			if value.FederatedIdentityCredential == nil {
-				value.FederatedIdentityCredential = &azureconnection.FederatedIdentityCredential{}
+				value.FederatedIdentityCredential = &azureconnection.FederatedIdentityCredential{Consumers: []string{"SVC:com.dynatrace.da"}}
+			} else if len(value.FederatedIdentityCredential.Consumers) == 0 {
+				value.FederatedIdentityCredential.Consumers = []string{"SVC:com.dynatrace.da"}
 			}
 			if updateAzureConnectionDirectoryID != "" {
 				value.FederatedIdentityCredential.DirectoryID = updateAzureConnectionDirectoryID
@@ -81,13 +88,24 @@ Examples:
 			}
 		case "clientSecret":
 			if value.ClientSecret == nil {
-				value.ClientSecret = &azureconnection.ClientSecretCredential{}
+				if updateAzureConnectionDirectoryID == "" || updateAzureConnectionApplicationID == "" {
+					return fmt.Errorf("the API returned no clientSecret data for this connection; provide both --directoryId and --applicationId to initialize it")
+				}
+				value.ClientSecret = &azureconnection.ClientSecretCredential{Consumers: []string{"SVC:com.dynatrace.da"}}
+			} else if len(value.ClientSecret.Consumers) == 0 {
+				value.ClientSecret.Consumers = []string{"SVC:com.dynatrace.da"}
 			}
 			if updateAzureConnectionDirectoryID != "" {
 				value.ClientSecret.DirectoryID = updateAzureConnectionDirectoryID
 			}
 			if updateAzureConnectionApplicationID != "" {
 				value.ClientSecret.ApplicationID = updateAzureConnectionApplicationID
+			}
+			if updateAzureConnectionClientSecret != "" {
+				value.ClientSecret.ClientSecret = updateAzureConnectionClientSecret
+			} else {
+				// API may return a masked placeholder — don't PUT it back
+				value.ClientSecret.ClientSecret = ""
 			}
 		default:
 			return fmt.Errorf("unsupported azure connection type %q", value.Type)
@@ -191,6 +209,7 @@ func init() {
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionApplicationID, "applicationId", "", "Application ID to set")
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionApplicationID, "applicationID", "", "Alias for --applicationId")
 	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionApplicationID, "aplicationID", "", "Compatibility alias for typo --aplicationID")
+	updateAzureConnectionCmd.Flags().StringVar(&updateAzureConnectionClientSecret, "clientSecret", "", "Client secret value (clientSecret type only); prefer passing via env var to keep out of shell history (note: expanded value can still be visible in process arguments)")
 
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigName, "name", "", "Monitoring config name/description (used when ID argument is not provided)")
 	updateAzureMonitoringConfigCmd.Flags().StringVar(&updateAzureMonitoringConfigLocationFiltering, "locationFiltering", "", "Comma-separated locations")
