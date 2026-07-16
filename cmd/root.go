@@ -21,6 +21,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
+	"github.com/dynatrace-oss/dtctl/pkg/inspect"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/suggest"
@@ -89,6 +90,10 @@ func execute() int {
 	// Setup enhanced error handling after all subcommands are registered
 	setupErrorHandlers(rootCmd)
 
+	// Wrap runnable commands with the token-scope preflight (--check-scopes and
+	// agent-mode auto-preflight). Must run after all subcommands are registered.
+	installScopePreflight(rootCmd)
+
 	// --- Alias resolution (before Cobra parses args AND before tracing init) ---
 	// Resolving aliases first ensures the span name reflects the real command,
 	// not the pre-expansion alias. Load config quietly; if it fails, skip alias
@@ -102,7 +107,7 @@ func execute() int {
 		if cfg.IgnoredExecKeys() {
 			fmt.Fprintf(os.Stderr,
 				"warning: ignoring aliases and hooks from local config %q "+
-					"(code-execution keys are only honored from the global config)\n",
+					"(honored only from the global config, --config, or DTCTL_CONFIG)\n",
 				cfg.LocalConfigPath())
 		}
 
@@ -127,6 +132,20 @@ func execute() int {
 	}
 	// --- End alias resolution ---
 
+	// --- Command profile filter ---
+	// Resolve the active profile (DTCTL_PROFILE > context binding > full) and
+	// mask out-of-profile commands before Cobra dispatches, so help, the
+	// `commands` catalog, and completion all reflect the reduced surface. A
+	// nil profile is the full tree (backward compatible). An unknown profile
+	// name is a hard error rather than a silent surface expansion.
+	prof, profErr := resolveActiveProfile(spanArgs)
+	if profErr != nil {
+		output.PrintHumanError("%s", profErr)
+		return exitCodeForError(profErr)
+	}
+	applyProfile(rootCmd, prof)
+	// --- End command profile filter ---
+
 	// Initialise OpenTelemetry tracing. Done after alias resolution so that
 	// the span name reflects the actual command (not a pre-alias invocation).
 	// The root span covers the entire invocation; shutdown flushes buffered
@@ -150,10 +169,28 @@ func execute() int {
 	}
 
 	if err := rootCmd.Execute(); err != nil {
+		// silentExitError carries an exit code only (e.g. --check-scopes already
+		// printed its verdict); set the status and return without re-printing.
+		var silent *silentExitError
+		if errors.As(err, &silent) {
+			if silent.code == 0 {
+				rootSpan.SetStatus(codes.Ok, "")
+			} else {
+				rootSpan.SetStatus(codes.Error, "insufficient scope")
+			}
+			return silent.code
+		}
+
 		errStr := err.Error()
 
-		// Enhance unknown command errors with suggestions
+		// Unknown top-level commands get one shot at plugin dispatch before
+		// the suggestion enhancer: `dtctl foo` execs dtctl-foo from PATH if
+		// present (kubectl semantics; built-ins always win because they never
+		// reach this error path). See docs/dev/PLUGIN_CONVENTIONS.md.
 		if strings.Contains(errStr, "unknown command") {
+			if code, handled := tryPluginDispatch(spanArgs); handled {
+				return code
+			}
 			err = enhanceCommandError(rootCmd, err)
 		}
 
@@ -304,6 +341,22 @@ func errorToDetail(err error) *output.ErrorDetail {
 		}
 	}
 
+	// ScopeError — agent-mode preflight blocked a command missing token scopes
+	var scopeErr *ScopeError
+	if errors.As(err, &scopeErr) {
+		return &output.ErrorDetail{
+			Code:           "insufficient_scope",
+			Message:        scopeErr.Error(),
+			RequiredScopes: scopeErr.Required,
+			GrantedScopes:  scopeErr.Granted,
+			MissingScopes:  scopeErr.Missing,
+			Suggestions: []string{
+				"re-create your token with: " + strings.Join(scopeErr.Missing, ", "),
+				"see 'dtctl commands howto' for token scope guidance",
+			},
+		}
+	}
+
 	// safety.SafetyError — operation blocked by safety level
 	var safetyErr *safety.SafetyError
 	if errors.As(err, &safetyErr) {
@@ -311,6 +364,17 @@ func errorToDetail(err error) *output.ErrorDetail {
 			Code:        "safety_blocked",
 			Message:     safetyErr.Reason,
 			Suggestions: safetyErr.Suggestions,
+		}
+	}
+
+	// ProfileError — command masked by the active command profile (surface axis,
+	// distinct from safety_blocked which is the permission axis).
+	var profileErr *ProfileError
+	if errors.As(err, &profileErr) {
+		return &output.ErrorDetail{
+			Code:        "profile_blocked",
+			Message:     profileErr.Headline(),
+			Suggestions: profileErr.Suggestions(),
 		}
 	}
 
@@ -355,6 +419,17 @@ func errorToDetail(err error) *output.ErrorDetail {
 			}
 		}
 		return detail
+	}
+
+	// inspect.Error — `dtctl inspect` carries a stable envelope code (spill_file_*,
+	// inspect_bad_flags, inspect_unknown_field) plus actionable suggestions.
+	var inspectErr *inspect.Error
+	if errors.As(err, &inspectErr) {
+		return &output.ErrorDetail{
+			Code:        inspectErr.Code,
+			Message:     inspectErr.Message,
+			Suggestions: inspectErr.Suggestions,
+		}
 	}
 
 	// Fallback — generic error with no structured context
@@ -457,6 +532,16 @@ func isURLRelatedError(err error) bool {
 // Uses typed exit codes from client.APIError and diagnostic.Error when available,
 // falling back to ExitUsageError for command/flag errors and ExitError for everything else.
 func exitCodeForError(err error) int {
+	var silent *silentExitError
+	if errors.As(err, &silent) {
+		return silent.code
+	}
+
+	var scopeErr *ScopeError
+	if errors.As(err, &scopeErr) {
+		return client.ExitPermissionError
+	}
+
 	var diagErr *diagnostic.Error
 	if errors.As(err, &diagErr) {
 		return diagErr.ExitCode()
@@ -465,6 +550,11 @@ func exitCodeForError(err error) int {
 	var apiErr *client.APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.ExitCode()
+	}
+
+	var profileErr *ProfileError
+	if errors.As(err, &profileErr) {
+		return client.ExitUsageError
 	}
 
 	var cmdErr *suggest.CommandError
@@ -624,7 +714,11 @@ func GetAgentMode() bool {
 	return agentMode
 }
 
-// LoadConfig loads the config and applies the --context flag override if provided
+// LoadConfig loads the config and applies the context override, if any.
+// Precedence: --context flag > DTCTL_CONTEXT env var > current-context in the
+// config file. Both overrides are session-local — the config file is never
+// written, so a scripted `DTCTL_CONTEXT=x dtctl ...` cannot repoint other
+// processes on the machine.
 func LoadConfig() (*config.Config, error) {
 	var cfg *config.Config
 	var err error
@@ -640,9 +734,12 @@ func LoadConfig() (*config.Config, error) {
 		return nil, err
 	}
 
-	// Override current context if --context flag is provided
-	if contextName != "" {
-		cfg.CurrentContext = contextName
+	override := contextName
+	if override == "" {
+		override = os.Getenv("DTCTL_CONTEXT")
+	}
+	if override != "" {
+		cfg.CurrentContext = override
 	}
 
 	return cfg, nil
@@ -662,7 +759,7 @@ func NewClientFromConfig(cfg *config.Config) (*client.Client, error) {
 	}
 	// Propagate W3C trace context on every Dynatrace API request.
 	if tracingRootCtx != nil {
-		c.InjectTraceContext(tracingRootCtx)
+		client.InjectTraceContext(c, tracingRootCtx)
 	}
 	return c, nil
 }
@@ -814,7 +911,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (searches .dtctl.yaml upward, then $XDG_CONFIG_HOME/dtctl/config)")
-	rootCmd.PersistentFlags().StringVar(&contextName, "context", "", "use a specific context")
+	rootCmd.PersistentFlags().StringVar(&contextName, "context", "", "use a specific context for this invocation (env: DTCTL_CONTEXT; never persisted)")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "table", "output format: json|yaml|csv|toon|table|wide")
 	rootCmd.PersistentFlags().StringVar(&jqFilter, "jq", "", "jq filter expression for structured output (json|yaml|toon); non-structured formats are auto-promoted to json")
 	rootCmd.PersistentFlags().CountVarP(&verbosity, "verbose", "v", "verbose output (-v for details, -vv for full debug including auth headers)")
@@ -823,6 +920,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	rootCmd.PersistentFlags().BoolVar(&plainMode, "plain", false, "plain output for machine processing (no colors, no interactive prompts)")
 	rootCmd.PersistentFlags().BoolVarP(&agentMode, "agent", "A", false, "agent output mode: wrap output in a structured JSON envelope with metadata")
 	rootCmd.PersistentFlags().BoolVar(&noAgent, "no-agent", false, "disable auto-detected agent mode")
+	rootCmd.PersistentFlags().BoolVar(&checkScopes, "check-scopes", false, "check the active token has the scopes this command requires, then exit without running it")
 	rootCmd.PersistentFlags().Int64Var(&chunkSize, "chunk-size", 500, "Paginate through all results in chunks of this size. 0 returns only the first page.")
 
 	// Bind flags to viper
@@ -849,6 +947,15 @@ func initConfig() {
 		plainMode = true
 	}
 
+	// DTCTL_OUTPUT provides a default output format when -o/--output is not
+	// given explicitly. The flag always wins; agent-mode auto-detection above
+	// also treats the env value as a default, not an explicit choice.
+	if f := rootCmd.PersistentFlags().Lookup("output"); f != nil && !f.Changed {
+		if env := os.Getenv("DTCTL_OUTPUT"); env != "" {
+			outputFormat = env
+		}
+	}
+
 	// Propagate plain mode to the output package so ColorEnabled() respects --plain
 	if plainMode {
 		output.SetPlainMode(true)
@@ -856,6 +963,10 @@ func initConfig() {
 
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
+	} else if envPath := os.Getenv(config.EnvConfig); envPath != "" {
+		// DTCTL_CONFIG is an explicit, trusted config that bypasses discovery —
+		// mirror config.Load's precedence so diagnostics name the right file.
+		viper.SetConfigFile(envPath)
 	} else {
 		// Check for local config first (.dtctl.yaml in current or parent directories)
 		localConfig := config.FindLocalConfig()

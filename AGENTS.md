@@ -13,23 +13,28 @@ kubectl-inspired CLI for Dynatrace (dashboards, workflows, SLOs, etc). Go + Cobr
 ## Architecture
 
 ```text
-cmd/          # Cobra commands (get, describe, create, delete, apply, exec, ctx, doctor, commands)
+cmd/          # Cobra commands (get, describe, create, delete, apply, exec, ctx, doctor, commands, plugin)
 pkg/
-  ├── client/    # HTTP client (auth, retry, rate limiting, pagination)
-  ├── config/    # Multi-context config (~/.config/dtctl/config, keyring tokens)
+  ├── client/    # Shim over sdk/session's client; keeps CLI-only extras (typed errors, pagination, OTel injection) and pins the dtctl/<version> User-Agent
+  ├── config/    # Shim over sdk/session — the config model/keyring implementation lives in the sdk
+  ├── auth/      # Shim over sdk/session's OAuth machinery + CLI-owned scope-composition tables
+  ├── safety/    # Shim over sdk/session's safety checker
+  ├── plugin/    # kubectl-style exec plugin resolution/discovery (docs/dev/PLUGIN_CONVENTIONS.md)
   ├── resources/ # Resource handlers — thin CLI wrappers that delegate to sdk/api/
   ├── output/    # Formatters (table, JSON, YAML, charts, agent envelope, color control)
   └── exec/      # DQL query execution
 sdk/            # Separate Go module (github.com/dynatrace-oss/dtctl/sdk)
+  ├── session/     # The session layer (docs/dev/CONFIG_CONTRACT.md): config model + load/save, credential stores, OAuth flow/refresh + cross-process lock, client-from-context with parameterized User-Agent, safety semantics
   ├── api/         # Typed API wrappers (one package per Dynatrace API surface)
   ├── httpclient/  # HTTP client, response helpers, pagination, typed errors
   ├── auth/        # Token type detection
   ├── urls/        # Environment URL validation/normalization
-  ├── credstore/   # OS keyring and file-based credential storage
   └── agentmode/   # AI agent environment detection
 ```
 
-**SDK delegation pattern**: CLI resource handlers in `pkg/resources/` import types from `sdk/api/` (often via type aliases) and delegate HTTP calls to SDK functions. The SDK contains **no file I/O, no CLI concerns, no display logic**. File reading (e.g., `ReadFileOrStdin`, `ParseInputFromFile`) stays in `pkg/resources/`.
+**SDK delegation pattern**: CLI resource handlers in `pkg/resources/` import types from `sdk/api/` (often via type aliases) and delegate HTTP calls to SDK functions. The `sdk/api/*` packages contain **no file I/O, no CLI concerns, no display logic**. File reading (e.g., `ReadFileOrStdin`, `ParseInputFromFile`) stays in `pkg/resources/`. (`sdk/session` is the deliberate exception on file I/O: it owns the config file and credential stores — that's its job.)
+
+**Plugins**: dtctl dispatches unknown commands to `dtctl-<name>` executables on PATH (kubectl semantics; built-ins always win). See [docs/dev/PLUGIN_CONVENTIONS.md](docs/dev/PLUGIN_CONVENTIONS.md) for the env contract (`DTCTL_CONTEXT`, `DTCTL_CONFIG`, `DTCTL_AGENT`, `DTCTL_PLAIN`, `DTCTL_CALLER_VERSION` — never tokens).
 
 ## Agent Output Mode
 
@@ -44,7 +49,7 @@ dtctl supports `--agent` / `-A` to wrap all output in a structured JSON envelope
 - Errors are also structured: `{"ok": false, "error": {"code": "not_found", "message": "..."}}`
 - Implementation: `pkg/output/agent.go` (`AgentPrinter`, `Response`, `PrintError`)
 - Per-command context enrichment via `enrichAgent()` helper in `cmd/root.go`
-- **Command catalog**: `dtctl commands --brief -o json` provides a machine-readable listing of all available commands, flags, and resource types — ideal for agent bootstrap
+- **Command catalog**: `dtctl commands` gives a compact minimal overview (verbs, resources, subcommands only; defaults to TOON) — ideal for agent bootstrap. `--brief` adds mutating status, access levels, flag types, and scopes; `--full` emits the exhaustive catalog (descriptions, flag defaults, global flags, materialized scopes). Override the format with `-o json`/`-o yaml`
 
 ## Color Control
 
@@ -67,7 +72,9 @@ When adding a new AI agent to the skills system, update **all** of the following
 
 1. **Code**: `pkg/aidetect/detect.go` (env var), `pkg/skills/installer.go` (agent entry + format), `cmd/skills.go` (help text, `--for` flag)
 2. **Tests**: `pkg/aidetect/detect_test.go`, `pkg/skills/installer_test.go`, `cmd/skills_test.go`
-3. **Docs**: `README.md`, `CHANGELOG.md`, `docs/QUICK_START.md` (agent detection list), `docs/dev/API_DESIGN.md` (agent detection list), `docs/dev/IMPLEMENTATION_STATUS.md` (skills feature line)
+3. **Docs**: `README.md`, `docs/QUICK_START.md` (agent detection list), `docs/dev/API_DESIGN.md` (agent detection list), `docs/dev/IMPLEMENTATION_STATUS.md` (skills feature line)
+
+> Releases are automated by release-please from conventional commits — do not hand-edit a changelog. Just make sure the commit/PR title is a proper conventional commit (e.g. `feat: detect <agent> sessions`).
 
 ## Adding a Resource
 

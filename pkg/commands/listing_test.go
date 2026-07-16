@@ -81,6 +81,64 @@ func TestBuild_SchemaVersion(t *testing.T) {
 	require.Equal(t, "verb-noun", listing.CommandModel)
 }
 
+func TestBuild_RequiredScopes(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+
+	// Access is derived per verb.
+	require.Equal(t, "read", listing.Verbs["get"].Access)
+	require.Equal(t, "delete", listing.Verbs["delete"].Access)
+	require.Equal(t, "run", listing.Verbs["exec"].Access)
+
+	// Per-(verb,resource) scopes are materialized in full mode.
+	getScopes := listing.Verbs["get"].RequiredScopesByResource
+	require.Equal(t, []string{"automation:workflows:read"}, getScopes["workflows"])
+	require.Equal(t, []string{"document:documents:read"}, getScopes["dashboards"])
+
+	// delete documents uses the distinct :delete scope; workflows fall back to write.
+	delScopes := listing.Verbs["delete"].RequiredScopesByResource
+	require.Equal(t, []string{"document:documents:delete"}, delScopes["dashboard"])
+	require.Equal(t, []string{"automation:workflows:write"}, delScopes["workflow"])
+
+	// exec uses run scopes.
+	require.Equal(t, []string{"automation:workflows:run"}, listing.Verbs["exec"].RequiredScopesByResource["workflow"])
+
+	// Top-level canonical table is populated for referenced resources.
+	require.Contains(t, listing.ResourceScopes, "workflow")
+	require.Equal(t, []string{"automation:workflows:read"}, listing.ResourceScopes["workflow"].Read)
+}
+
+func TestNewBrief_ScopesCompact(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+	brief := NewBrief(listing)
+
+	// Brief keeps access + the canonical table, drops the materialized map.
+	require.Equal(t, "delete", brief.Verbs["delete"].Access)
+	require.Nil(t, brief.Verbs["delete"].RequiredScopesByResource)
+	require.NotEmpty(t, brief.ResourceScopes)
+	require.Contains(t, brief.ResourceScopes, "workflow")
+}
+
+func TestRequiredScopesUnionAndForResource(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+
+	// Verb-filtered union: delete only yields delete-access scopes.
+	delOnly, _ := FilterByResource(listing, "delete")
+	require.ElementsMatch(t,
+		[]string{"document:documents:delete", "automation:workflows:write"},
+		RequiredScopesUnion(delOnly),
+	)
+
+	// Resource-narrowed union: workflows across all verbs in the test tree
+	// (get=read, describe=read, delete=write, exec=run).
+	require.ElementsMatch(t,
+		[]string{"automation:workflows:read", "automation:workflows:write", "automation:workflows:run"},
+		RequiredScopesForResource(listing, "wf"),
+	)
+}
+
 func TestBuild_GlobalFlags(t *testing.T) {
 	root := newTestRoot()
 	listing := Build(root)
@@ -221,10 +279,10 @@ func TestNewBrief_FullBehavior(t *testing.T) {
 	require.Empty(t, brief.Description)
 	require.Nil(t, brief.GlobalFlags)
 	require.Nil(t, brief.TimeFormats)
-	require.Nil(t, brief.Patterns)
-	require.Nil(t, brief.Antipatterns)
 
 	// Preserved fields
+	require.Equal(t, listing.Patterns, brief.Patterns)
+	require.Equal(t, listing.Antipatterns, brief.Antipatterns)
 	require.Equal(t, SchemaVersion, brief.SchemaVersion)
 	require.Equal(t, "dtctl", brief.Tool)
 	require.NotEmpty(t, brief.Verbs)
@@ -406,12 +464,27 @@ func TestNewBrief_DoesNotMutateOriginal(t *testing.T) {
 	require.Len(t, original.Patterns, origPatternCount, "original Patterns should be unchanged")
 	require.Equal(t, origApplyDesc, original.Verbs["apply"].Description, "original verb description should be unchanged")
 
-	// Brief should have stripped fields
+	// Brief should have stripped verbose fields
 	require.Empty(t, brief.Description)
 	require.Nil(t, brief.GlobalFlags)
 	require.Nil(t, brief.TimeFormats)
-	require.Nil(t, brief.Patterns)
-	require.Nil(t, brief.Antipatterns)
+
+	// ...but retain patterns/antipatterns: they are the primary agent grounding
+	// and are cheap, so brief mode keeps them.
+	require.Equal(t, original.Patterns, brief.Patterns, "brief should retain patterns")
+	require.Equal(t, original.Antipatterns, brief.Antipatterns, "brief should retain antipatterns")
+}
+
+// TestNewBrief_RetainsSmartscapePatterns guards the bootstrap path: agents
+// learn Smartscape DQL from the patterns/antipatterns arrays, and the documented
+// bootstrap command is `dtctl commands --brief -o json`. If brief mode ever drops
+// these arrays again, the guidance becomes invisible to agents.
+func TestNewBrief_RetainsSmartscapePatterns(t *testing.T) {
+	brief := NewBrief(Build(newTestRoot()))
+
+	joined := strings.Join(append(append([]string{}, brief.Patterns...), brief.Antipatterns...), "\n")
+	require.Contains(t, joined, "smartscapeNodes", "brief output must surface Smartscape guidance")
+	require.Contains(t, joined, `dedup type`, "brief output must surface the node-type discovery query")
 }
 
 func TestNewBrief_PreservesMutatingStatus(t *testing.T) {
@@ -757,8 +830,8 @@ func TestBuild_BriefJSONRoundTrip(t *testing.T) {
 	require.Empty(t, decoded.Description)
 	require.Nil(t, decoded.GlobalFlags)
 	require.Nil(t, decoded.TimeFormats)
-	require.Nil(t, decoded.Patterns)
-	require.Nil(t, decoded.Antipatterns)
+	require.Equal(t, listing.Patterns, decoded.Patterns)
+	require.Equal(t, listing.Antipatterns, decoded.Antipatterns)
 
 	for name, verb := range brief.Verbs {
 		decodedVerb := decoded.Verbs[name]
@@ -792,4 +865,97 @@ func TestWriteTo_YAMLWriteError(t *testing.T) {
 
 	err := WriteTo(errWriter{}, listing, "yaml")
 	require.Error(t, err)
+}
+
+// --- NewMinimal tests ---
+
+func TestNewMinimal_KeepsStructureOnly(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+	m := NewMinimal(listing)
+
+	// Header fields carried over.
+	require.Equal(t, listing.SchemaVersion, m.SchemaVersion)
+	require.Equal(t, "dtctl", m.Tool)
+	require.Equal(t, "verb-noun", m.CommandModel)
+	require.Equal(t, listing.Aliases, m.Aliases)
+
+	// Every verb is present with just resources + subcommands.
+	require.Len(t, m.Verbs, len(listing.Verbs))
+	get := m.Verbs["get"]
+	require.NotNil(t, get)
+	require.ElementsMatch(t, listing.Verbs["get"].Resources, get.Resources)
+
+	// Nested subcommands survive.
+	exec := m.Verbs["exec"]
+	require.NotNil(t, exec)
+	require.Contains(t, exec.Subcommands, "copilot")
+	require.Contains(t, exec.Subcommands["copilot"].Subcommands, "nl2dql")
+}
+
+func TestNewMinimal_DoesNotMutateOriginal(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+
+	origVerbCount := len(listing.Verbs)
+	origDesc := listing.Verbs["get"].Description
+	origGlobalFlags := len(listing.GlobalFlags)
+
+	_ = NewMinimal(listing)
+
+	require.Len(t, listing.Verbs, origVerbCount)
+	require.Equal(t, origDesc, listing.Verbs["get"].Description)
+	require.Len(t, listing.GlobalFlags, origGlobalFlags)
+	require.NotNil(t, listing.TimeFormats)
+}
+
+func TestNewMinimal_SmallerThanBrief(t *testing.T) {
+	root := newTestRoot()
+	listing := Build(root)
+
+	briefData, err := json.Marshal(NewBrief(listing))
+	require.NoError(t, err)
+	minimalData, err := json.Marshal(NewMinimal(listing))
+	require.NoError(t, err)
+
+	require.Less(t, len(minimalData), len(briefData),
+		"minimal output (%d bytes) should be smaller than brief (%d bytes)",
+		len(minimalData), len(briefData))
+}
+
+func TestNewMinimal_JSONRoundTrip(t *testing.T) {
+	root := newTestRoot()
+	m := NewMinimal(Build(root))
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteValue(&buf, m, "json"))
+	require.True(t, json.Valid(buf.Bytes()))
+
+	var decoded Minimal
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded))
+	require.Equal(t, "dtctl", decoded.Tool)
+	require.NotEmpty(t, decoded.Verbs)
+}
+
+// --- WriteValue tests ---
+
+func TestWriteValue_TOON(t *testing.T) {
+	root := newTestRoot()
+	m := NewMinimal(Build(root))
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteValue(&buf, m, "toon"))
+	require.NotEmpty(t, buf.String())
+	require.Contains(t, buf.String(), "tool: dtctl")
+}
+
+func TestWriteValue_DefaultIsJSON(t *testing.T) {
+	root := newTestRoot()
+	m := NewMinimal(Build(root))
+
+	var jsonBuf, defaultBuf bytes.Buffer
+	require.NoError(t, WriteValue(&jsonBuf, m, "json"))
+	require.NoError(t, WriteValue(&defaultBuf, m, "table"))
+	require.Equal(t, jsonBuf.String(), defaultBuf.String(),
+		"unknown format should default to JSON")
 }

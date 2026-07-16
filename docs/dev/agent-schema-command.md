@@ -20,23 +20,26 @@ AI coding agents (Claude Code, Cursor, GitHub Copilot, etc.) need to know what d
 Simple, self-explanatory — matches the pattern used by Heroku CLI and oclif-based tools. No ambiguity about what it does.
 
 ```
-dtctl commands                        # Full JSON listing of all commands
-dtctl commands --brief                # Minimal listing (reduced token count)
+dtctl commands                        # Minimal overview (verbs, resources, subcommands; TOON default)
+dtctl commands --brief                # Compact middle tier (mutating/access/scopes + flag types)
+dtctl commands --full                 # Exhaustive catalog (descriptions, flag defaults, global flags)
 dtctl commands workflows              # Commands for a single resource type
-dtctl commands -o yaml                # YAML output
+dtctl commands -o json                # Override the TOON default (also -o yaml)
 dtctl commands howto                  # Usage-focused reference document
 ```
+
+**Detail tiers**: `dtctl commands` progressively discloses detail across three tiers. The bare command is the minimal overview (see [Default overview](#default-overview-minimal) below), `--brief` is the compact middle tier (see [Brief mode](#brief-mode)), and `--full` is the exhaustive catalog that materializes every field shown in [Output structure](#output-structure). `--brief` and `--full` are mutually exclusive. The default output format is TOON (the most compact format); pass `-o json`/`-o yaml` to override.
 
 **Naming rationale**:
 - `commands` — straightforward, describes exactly what it outputs. Established pattern (Heroku CLI, oclif framework).
 - `--brief` instead of `--compact` — clearer intent ("give me the short version").
 - Positional arg instead of a flag — `dtctl commands workflows` is more natural than `dtctl commands --scope workflows`. Matches kubectl patterns (`kubectl api-resources`, `kubectl explain pods`). Accepts resource names or aliases (`wf`, `dash`).
-- `-o` — reuses dtctl's standard output flag. Only `json` (default) and `yaml` are supported; other formats (table, chart, etc.) are not meaningful here.
+- `-o` — reuses dtctl's standard output flag. `dtctl commands` defaults to `toon` (the most compact structured format); `json` and `yaml` are also supported. Other formats (table, chart, etc.) are not meaningful here.
 - `howto` subcommand — action-oriented; outputs an LLM-optimized usage guide.
 
 ### Output structure
 
-The output describes dtctl's verb-noun command model:
+The following shows the exhaustive `--full` output, which describes dtctl's verb-noun command model in full. (The default bare `dtctl commands` emits only a minimal subset of this — see [Default overview](#default-overview-minimal) — and `--brief` a compact subset.) JSON is used here for readability; the command defaults to the more compact TOON format.
 
 ```json
 {
@@ -215,11 +218,25 @@ The output describes dtctl's verb-noun command model:
 - **`schema_version`** — integer, incremented on breaking changes to the schema structure. Lets consumers detect incompatibilities without parsing the entire document.
 - **`mutating`** — boolean per verb. Derived from dtctl's safety system (`OperationCreate`, `OperationUpdate`, `OperationDelete`). Agents can use this to assess risk before running a command.
 - **`safety_operation`** — the safety operation type for mutating commands. Maps directly to dtctl's 4-tier safety levels (a command blocked at `readonly` will have `safety_operation` set; a read-only verb won't).
+- **`access`** — per verb, the access level (`read`/`write`/`delete`/`run`) derived from the verb and its safety operation. Combined with the top-level `resource_scopes` table, an agent can compute any command's required scopes.
+- **`required_scopes_by_resource`** — per verb, a map of resource name → the OAuth/IAM scopes that verb needs for that resource (full mode only). Lets an agent determine the scopes a command needs **before** running it, avoiding mid-task 403s.
+- **`required_scopes`** — per verb, a flat scope list for verbs whose scopes are not per-resource (`query`/`verify`/`wait`, which read Grail via DQL).
+- **`resource_scopes`** — top-level canonical `(resource → {read, write, delete, run})` table. Single source of truth: `pkg/auth.GetScopesForSafetyLevel` (what login requests) is composed from the same table, and a test enforces that every per-command scope is grantable by a safety level.
 - **`time_formats`** — in the JSON schema (not just in `howto`) so agents consuming the structured output have this without a second call.
+
+Since these scope fields were added, `schema_version` is `2`. See [TOKEN_SCOPES.md](../TOKEN_SCOPES.md) for the human-facing scope reference.
+
+### Default overview (minimal)
+
+The bare `dtctl commands` (no `--brief`/`--full`) emits a **minimal overview**: just the verbs, the resources each operates on, and any nested subcommands. It deliberately omits descriptions, flags, `mutating`/`access`/`safety_operation` status, scopes, `global_flags`, `time_formats`, and `patterns`/`antipatterns`. This is the leanest possible map of "what can dtctl do", meant as the first bootstrap call for an agent. Combined with the TOON default format, the overview is roughly ~4KB — small enough to drop into a system prompt. Agents that need risk/scope metadata step up to `--brief`; agents that need full descriptions and flag documentation step up to `--full`.
+
+### Full mode
+
+`--full` emits the **exhaustive catalog** — exactly the document shown in [Output structure](#output-structure) above: verb/flag descriptions, flag defaults and descriptions, `global_flags`, `time_formats`, the materialized `required_scopes_by_resource`, and the `patterns`/`antipatterns` arrays. This is the largest tier (~52KB as `--full -o json`) and is what the older `dtctl commands` default used to produce before the minimal overview became the default. `--brief` and `--full` are mutually exclusive.
 
 ### Brief mode
 
-`--brief` strips descriptions, examples, patterns, antipatterns, time_formats, and safety_operation. Reduces token count by ~60%:
+`--brief` is the compact middle tier. Starting from the full catalog it strips descriptions, examples, time_formats, safety_operation, and the materialized `required_scopes_by_resource`. It **retains** the top-level `patterns`/`antipatterns` arrays — these are the primary grounding agents rely on after bootstrapping with `dtctl commands --brief -o json`, and cost only a handful of tokens. It keeps each verb's `access` and the compact top-level `resource_scopes` table, so scopes remain derivable as `resource_scopes[resource][verb.access]`. DQL `required_scopes` (not derivable from the table) are retained. As `--brief -o json` it is ~26KB, roughly half the full catalog:
 
 ```json
 {
@@ -249,6 +266,31 @@ dtctl commands workflows    # Only verbs that apply to workflows
 dtctl commands wf           # Same, using alias
 dtctl commands get          # Only the 'get' verb (filter by verb name)
 ```
+
+### Minimal scope union (`--required-scopes`)
+
+`dtctl commands [filter] --required-scopes` prints the sorted, de-duplicated scope union for a command set — the minimal token to provision for a pipeline. A **verb** filter unions that verb's scopes across its resources; a **resource** filter narrows to just that resource's scopes; no filter yields the union across all commands.
+
+```bash
+dtctl commands wf --required-scopes        # scopes for everything dtctl does to workflows
+dtctl commands get --required-scopes        # all read scopes
+dtctl commands delete --required-scopes -o json
+dtctl commands --required-scopes            # full union
+```
+
+### Preflight (`--check-scopes`)
+
+`--check-scopes` is a global flag on any command. It resolves the command's required scopes (from the same catalog data), compares them against the scopes granted in the active OAuth token, prints a verdict, and exits **without running the command**:
+
+```bash
+dtctl delete workflow my-wf --check-scopes          # human verdict, exit 5 if missing
+dtctl delete workflow my-wf --check-scopes -o json  # { "status": "insufficient_scope", "required_scopes": [...], "granted_scopes": [...], "missing_scopes": [...] }
+```
+
+- `status` is `ok`, `insufficient_scope`, or `unknown`. Opaque API/platform tokens (scopes not introspectable) report `unknown`.
+- Exit code is `5` (`ExitPermissionError`) when scopes are missing, `0` otherwise.
+- In **agent mode**, the verdict uses the standard envelope contract: an `ok`/`unknown` verdict is wrapped in an `{ "ok": true, "result": { "status": ..., ... }, "context": {...} }` envelope, and an `insufficient_scope` verdict is returned as the `{ "ok": false, "error": { "code": "insufficient_scope", "required_scopes": [...], "granted_scopes": [...], "missing_scopes": [...] } }` error envelope (exit 5) — never a bare object.
+- Also in **agent mode**, mutating commands are auto-preflighted *without* `--check-scopes`: a missing scope is returned as the same `insufficient_scope` error envelope before any API call, instead of a raw 403. The preflight makes no network call and degrades to "proceed" on any error.
 
 When a positional arg matches both a verb and a resource, verb takes priority (consistent with dtctl's command resolution).
 
@@ -315,9 +357,9 @@ All steps completed in PR #62.
 ### Step 1: Create cmd/commands.go (0.5 day) -- Done
 
 1. Add `commandsCmd` with `howto` subcommand
-2. Default behavior (no subcommand): output JSON command listing
+2. Default behavior (no subcommand, no tier flag): output the minimal overview listing
 3. Accept optional positional arg for resource/verb filtering
-4. Support `-o json` (default) and `-o yaml`
+4. Default to `-o toon`; also support `-o json` and `-o yaml`
 5. Register under root command
 6. Add short/long descriptions following the help text spec
 
@@ -331,9 +373,9 @@ All steps completed in PR #62.
 3. Categorize into verb-noun structure
 4. Annotate each verb with `mutating` (derived from whether the command handler calls `NewSafetyChecker`) and `safety_operation`
 5. Include `schema_version`, `time_formats`, `resource_aliases`
-6. Output as JSON or YAML to stdout
-7. `--brief` flag strips verbose fields (descriptions, patterns, antipatterns, time_formats, safety_operation) but preserves `mutating`
-8. Positional arg filters to a specific resource or verb
+6. Output as TOON (default), JSON, or YAML to stdout
+7. Default tier is the minimal overview (verbs/resources/subcommands); `--brief` adds the compact middle tier (mutating, access, flag types, `resource_scopes`, `patterns`/`antipatterns`) and `--full` emits the exhaustive catalog (descriptions, flag defaults, global_flags, time_formats, materialized scopes). `--brief` and `--full` are mutually exclusive
+8. Positional arg filters to a specific resource or verb (applied before the tier transform)
 
 ### Step 3: Build howto generator (0.5 day) -- Done
 
@@ -356,9 +398,10 @@ All steps completed in PR #62.
 
 ## Acceptance Criteria
 
-- [x] `dtctl commands` outputs valid JSON describing all commands with `schema_version`
-- [x] Every verb has a `mutating` boolean; mutating verbs include `safety_operation`
-- [x] `dtctl commands --brief` is ≤40% the size of full output and preserves `mutating`
+- [x] `dtctl commands` outputs a minimal overview (verbs, resources, subcommands) in TOON by default
+- [x] `dtctl commands --full` outputs the exhaustive catalog with `schema_version`; every verb has a `mutating` boolean and mutating verbs include `safety_operation`
+- [x] `dtctl commands --brief` is ≤40% the size of the full catalog and preserves `mutating`
+- [x] `dtctl commands --brief` and `--full` are mutually exclusive
 - [x] `dtctl commands workflows` outputs listing filtered to workflow-related verbs only
 - [x] `dtctl commands wf` resolves alias and produces same output as `dtctl commands workflows`
 - [x] `dtctl commands -o yaml` outputs YAML

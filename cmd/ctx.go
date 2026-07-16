@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
@@ -64,6 +65,37 @@ Examples:
 
 		// One arg: switch to that context (same as config use-context)
 		return useContext(args[0])
+	},
+}
+
+// ctxTokenCmd prints the resolved token for the current (or named) context.
+// It prints the raw credential only — not a full Authorization header value
+// (no "Bearer "/"Api-Token " scheme prefix), so callers must add the scheme themselves.
+// OAuth tokens are auto-refreshed if expired, so the printed value matches what
+// dtctl itself sends.
+var ctxTokenCmd = &cobra.Command{
+	Use:   "token [context-name]",
+	Short: "Print the resolved token for a context",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := LoadConfig()
+		if err != nil {
+			return err
+		}
+		name := cfg.CurrentContext
+		if len(args) == 1 {
+			name = args[0]
+		}
+		nc, err := cfg.GetContext(name)
+		if err != nil {
+			return err
+		}
+		tok, err := client.GetTokenForContext(cfg, nc.Context.Environment, nc.Context.TokenRef)
+		if err != nil {
+			return err
+		}
+		fmt.Println(tok)
+		return nil
 	},
 }
 
@@ -130,8 +162,9 @@ Examples:
 		tokenRef, _ := cmd.Flags().GetString("token-ref")
 		safetyLevel, _ := cmd.Flags().GetString("safety-level")
 		description, _ := cmd.Flags().GetString("description")
+		profile, _ := cmd.Flags().GetString("profile")
 
-		return setContext(args[0], environment, tokenRef, safetyLevel, description)
+		return setContext(args[0], environment, tokenRef, safetyLevel, description, profile)
 	},
 }
 
@@ -178,6 +211,7 @@ func listContexts() error {
 			Name:        nc.Name,
 			Environment: nc.Context.Environment,
 			SafetyLevel: nc.Context.SafetyLevel.String(),
+			Profile:     nc.Context.Profile,
 			Description: nc.Context.Description,
 		})
 	}
@@ -257,6 +291,11 @@ func describeContext(name string) error {
 		fmt.Printf("%*s(All operations including bucket deletion)\n", w, "")
 	}
 
+	if found.Context.Profile != "" {
+		output.DescribeKV("Profile:", w, "%s", found.Context.Profile)
+		fmt.Printf("%*s(Restricts the visible command surface)\n", w, "")
+	}
+
 	if found.Context.Description != "" {
 		output.DescribeKV("Description:", w, "%s", found.Context.Description)
 	}
@@ -265,7 +304,7 @@ func describeContext(name string) error {
 }
 
 // setContext creates or updates a named context (shared logic)
-func setContext(name, environment, tokenRef, safetyLevel, description string) error {
+func setContext(name, environment, tokenRef, safetyLevel, description, profile string) error {
 	cfg, err := loadConfigRaw()
 	if err != nil {
 		cfg = config.NewConfig()
@@ -307,9 +346,17 @@ func setContext(name, environment, tokenRef, safetyLevel, description string) er
 		}
 	}
 
+	// Warn (don't fail) on a profile name that is not currently resolvable: the
+	// profile may be defined later, or in a different config file. A soft warning
+	// catches the common typo without blocking legitimate ahead-of-time binding.
+	if profile != "" && profile != config.ProfileFull && !cfg.ProfileExists(profile) {
+		output.PrintWarning("profile %q is not defined yet; define it under 'profiles:' or it will error when the context is used", profile)
+	}
+
 	opts := &config.ContextOptions{
 		SafetyLevel: config.SafetyLevel(safetyLevel),
 		Description: description,
+		Profile:     profile,
 	}
 
 	cfg.SetContextWithOptions(name, environment, tokenRef, opts)
@@ -370,6 +417,7 @@ func deleteContext(name string) error {
 func init() {
 	rootCmd.AddCommand(ctxCmd)
 
+	ctxCmd.AddCommand(ctxTokenCmd)
 	ctxCmd.AddCommand(ctxCurrentCmd)
 	ctxCmd.AddCommand(ctxDescribeCmd)
 	ctxCmd.AddCommand(ctxSetCmd)
@@ -380,4 +428,6 @@ func init() {
 	ctxSetCmd.Flags().String("token-ref", "", "token reference name")
 	ctxSetCmd.Flags().String("safety-level", "", "safety level (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)")
 	ctxSetCmd.Flags().String("description", "", "human-readable description for this context")
+	ctxSetCmd.Flags().String("profile", "", "command profile to bind (restricts the visible command surface; e.g. query, investigate, full)")
+	_ = ctxSetCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 }
