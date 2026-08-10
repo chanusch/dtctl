@@ -178,6 +178,26 @@ Examples:
 
 		queryFile, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")
+		dqlFlag, _ := cmd.Flags().GetString("dql")
+		if dqlFlag != "" && len(args) == 0 {
+			args = []string{dqlFlag}
+		}
+		// Agents write `dtctl query dql <text>` / `query execute <text>`
+		// (hallucinated subcommands) and shell-split queries into several
+		// positional args. Until now args[0] was sent alone — the literal
+		// string "dql", or a truncated query — producing an opaque
+		// UNKNOWN_COMMAND or silently wrong results. Strip the marker token
+		// and rejoin the fragments instead (no DQL statement starts with
+		// these words).
+		if len(args) > 1 {
+			switch args[0] {
+			case "dql", "execute", "exec", "run":
+				args = args[1:]
+			}
+		}
+		if len(args) > 1 {
+			args = []string{strings.Join(args, " ")}
+		}
 
 		var query string
 
@@ -244,10 +264,21 @@ Examples:
 		noProgress, _ := cmd.Flags().GetBool("no-progress")
 		enforceQueryConsumptionLimit, _ := cmd.Flags().GetBool("enforce-query-consumption-limit")
 		includeTypes, _ := cmd.Flags().GetBool("include-types")
+		typed, _ := cmd.Flags().GetBool("typed")
+		// Only an explicit --include-types surfaces the DQL type block as a
+		// top-level "types" key in structured output. Parquet/--typed force
+		// includeTypes on below to *consume* the metadata internally, but that
+		// must not start emitting the block, so capture intent before forcing.
+		emitTypes := cmd.Flags().Changed("include-types")
 		// Parquet derives its column schema from DQL types, so request them even
 		// if the user did not pass --include-types. The type metadata is consumed
 		// to build the schema and is not added to the output rows.
 		if formatRequiresIncludeTypes(outputFormat) {
+			includeTypes = true
+		}
+		// --typed casts scalar columns using the DQL type metadata, so it likewise
+		// needs the types requested even without an explicit --include-types.
+		if typed {
 			includeTypes = true
 		}
 		includeContributions, _ := cmd.Flags().GetBool("include-contributions")
@@ -381,7 +412,9 @@ Examples:
 			EnablePreview:                enablePreview,
 			EnforceQueryConsumptionLimit: enforceQueryConsumptionLimit,
 			IncludeTypes:                 includeTypes,
+			EmitTypes:                    emitTypes,
 			IncludeContributions:         includeContributions,
+			Typed:                        typed,
 			DefaultTimeframeStart:        defaultTimeframeStart,
 			DefaultTimeframeEnd:          defaultTimeframeEnd,
 			Locale:                       locale,
@@ -412,6 +445,9 @@ Examples:
 			}
 			if includeContributions {
 				output.PrintWarning("--include-contributions is ignored in live mode (contribution data is not displayed during live updates)")
+			}
+			if typed {
+				output.PrintWarning("--typed is ignored in live mode (live mode renders a table, where the API's string encoding is not surfaced)")
 			}
 			if dryRun {
 				output.PrintWarning("--dry-run is ignored in live mode (live mode always executes queries)")
@@ -719,6 +755,7 @@ func init() {
 	// Flags for main query command
 	queryCmd.Flags().StringP("file", "f", "", "read query from file")
 	queryCmd.Flags().StringArray("set", []string{}, "set template variable (key=value)")
+	queryCmd.Flags().String("dql", "", "DQL text (alias for the positional argument)")
 
 	// Live mode flags
 	queryCmd.Flags().Bool("live", false, "enable live mode with periodic updates")
@@ -740,8 +777,9 @@ func init() {
 	queryCmd.Flags().Bool("enable-preview", false, "request preview results if available within timeout")
 	queryCmd.Flags().Bool("no-progress", false, "disable the live progress bar shown on stderr for long queries")
 	queryCmd.Flags().Bool("enforce-query-consumption-limit", false, "enforce query consumption limit")
-	queryCmd.Flags().Bool("include-types", false, "include type information in query results")
+	queryCmd.Flags().Bool("include-types", false, "surface DQL per-column type info as a top-level \"types\" key (json/yaml output)")
 	queryCmd.Flags().Bool("include-contributions", false, "include bucket contribution information in query results")
+	queryCmd.Flags().Bool("typed", false, "cast scalar columns (long, double, duration, boolean) to native JSON/YAML types instead of the API's string encoding; opt-in, implies --include-types")
 
 	// Timeframe flags
 	queryCmd.Flags().String("default-timeframe-start", "", "query timeframe start timestamp (ISO-8601/RFC3339, e.g., '2022-04-20T12:10:04.123Z')")

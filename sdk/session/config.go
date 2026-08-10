@@ -9,6 +9,8 @@ import (
 
 	"github.com/adrg/xdg"
 	"gopkg.in/yaml.v3"
+
+	"github.com/dynatrace-oss/dtctl/sdk/urls"
 )
 
 // Config represents the dtctl configuration
@@ -108,6 +110,7 @@ type Context struct {
 	TokenRef    string      `yaml:"token-ref" table:"TOKEN-REF"`
 	SafetyLevel SafetyLevel `yaml:"safety-level,omitempty" table:"SAFETY-LEVEL"`
 	Description string      `yaml:"description,omitempty" table:"DESCRIPTION,wide"`
+	AccountUUID string      `yaml:"account-uuid,omitempty" table:"ACCOUNT-UUID,wide"`
 	// Profile binds a command profile to this context, restricting the visible
 	// command surface when the context is active (unless overridden by
 	// DTCTL_PROFILE). Empty means the full command tree. See profile.go.
@@ -733,6 +736,8 @@ func (c *Config) SetContext(name, environment, tokenRef string) {
 
 // SetContextWithOptions creates or updates a context with optional fields
 func (c *Config) SetContextWithOptions(name, environment, tokenRef string, opts *ContextOptions) {
+	environment = urls.Normalize(environment)
+
 	for i, nc := range c.Contexts {
 		if nc.Name == name {
 			c.Contexts[i].Context.Environment = environment

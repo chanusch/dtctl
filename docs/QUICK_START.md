@@ -10,27 +10,28 @@ This guide provides practical examples for using dtctl to manage your Dynatrace 
 2. [Workflows](#workflows)
 3. [Dashboards & Notebooks](#dashboards--notebooks)
 4. [DQL Queries](#dql-queries)
-5. [Service Level Objectives (SLOs)](#service-level-objectives-slos)
-6. [Notifications](#notifications)
-7. [Grail Buckets](#grail-buckets)
-8. [Lookup Tables](#lookup-tables)
-9. [OpenPipeline](#openpipeline)
-10. [Settings API](#settings-api)
-11. [App Engine](#app-engine)
+5. [Environment Inventory](#environment-inventory)
+6. [Service Level Objectives (SLOs)](#service-level-objectives-slos)
+7. [Notifications](#notifications)
+8. [Grail Buckets](#grail-buckets)
+9. [Lookup Tables](#lookup-tables)
+10. [OpenPipeline](#openpipeline)
+11. [Settings API](#settings-api)
+12. [App Engine](#app-engine)
     - [List and View Apps](#list-and-view-apps)
     - [App Functions](#app-functions)
     - [App Intents](#app-intents)
-12. [EdgeConnect](#edgeconnect)
-13. [Davis AI](#davis-ai)
-14. [Live Debugger](#live-debugger)
-15. [Extensions 2.0](#extensions-20)
-16. [Output Formats](#output-formats)
-17. [AWS Monitoring](#aws-monitoring)
-18. [Azure Monitoring](#azure-monitoring)
-19. [GCP Monitoring (Preview)](#gcp-monitoring-preview)
-20. [AI Agent Skills](#ai-agent-skills)
-21. [Tips & Tricks](#tips--tricks)
-22. [Troubleshooting](#troubleshooting)
+13. [EdgeConnect](#edgeconnect)
+14. [Davis AI](#davis-ai)
+15. [Live Debugger](#live-debugger)
+16. [Extensions 2.0](#extensions-20)
+17. [Output Formats](#output-formats)
+18. [AWS Monitoring](#aws-monitoring)
+19. [Azure Monitoring](#azure-monitoring)
+20. [GCP Monitoring (Preview)](#gcp-monitoring-preview)
+21. [AI Agent Skills](#ai-agent-skills)
+22. [Tips & Tricks](#tips--tricks)
+23. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -1407,6 +1408,37 @@ dtctl verify query -f query.dql --canonical 2>&1 | grep -A 999 "Canonical Query:
 
 ---
 
+## Environment Inventory
+
+Where `dtctl commands` answers *"what can I run?"*, `dtctl inventory` answers *"what is there to query?"* — it probes the current context's environment (read-only, budgeted, nothing persisted) and reports what data actually exists there.
+
+```bash
+# The environment inventory for the current context
+dtctl inventory
+
+# Machine-readable, e.g. for AI agents
+dtctl inventory -o json
+
+# Merge organization-specific capability definitions over the built-in set
+dtctl inventory --definitions ./our-capabilities.yaml
+
+# Only your definitions, without the built-in set
+dtctl inventory --definitions ./our-capabilities.yaml --no-builtin-definitions
+```
+
+The inventory covers:
+
+- **Data objects**: which catalog objects are fetchable, and which are query-command-only (`metrics`, `smartscape.*`) so you aren't baited into `fetch` calls that cannot work
+- **Buckets** and **filter segments**
+- **Live entity-type census** via Smartscape (not the `dt.entity.*` lookback views)
+- **Capabilities**: present, absent (with the evidence checked cited, e.g. `rum — no user.events in the data-object catalog`), or unknown when a check could not run (failed probe, exhausted budget) — unknown is never evidence of absence
+
+Capabilities are defined declaratively by *how* they are discovered — one of four fixed shapes (`dataObject`, `entityTypes` globs, `metricKey` glob, or a DQL `probe` with a mandatory evidence `window`). See [docs/dev/examples/inventory-definitions.example.yaml](dev/examples/inventory-definitions.example.yaml) for the format.
+
+Discovery cost is bounded: the default battery is 4–5 DQL queries, every probe carries a scan cap (`--scan-limit-gbytes`, default 25), and a mandatory budget (`--budget-queries`, `--budget-seconds`) stops discovery with a partial inventory rather than overrunning.
+
+---
+
 ## Service Level Objectives (SLOs)
 
 SLOs define and track service reliability targets.
@@ -2002,22 +2034,59 @@ dtctl get settings <object-id> --schema builtin:openpipeline.logs.pipelines
 
 **Note:** See the [Settings API](#settings-api) section below for full details on managing OpenPipeline configurations.
 
+### Verify & Preview Pipeline Components
+
+Before you apply a pipeline change, validate its individual components against the OpenPipeline engine and dry-run a processor against sample records — all read-only, no live config is touched. These use the same restricted DQL subset the engine enforces (matchers allow only `matchesPhrase`, `matchesValue`, `isNull`, `iAny`, …; DQL processor scripts are limited to processor commands like `parse`, `fields*`, `fieldsFlatten`), so they catch pipeline-context errors that a generic `dtctl verify query` misses.
+
+```bash
+# Verify a matching condition (inline, file, or stdin)
+dtctl verify openpipeline-matcher 'matchesValue(content, "error")'
+dtctl verify openpipeline-matcher -f matcher.dql
+echo 'matchesValue(content, "error")' | dtctl verify openpipeline-matcher -f -
+
+# Scope to a stage context or a configuration
+dtctl verify openpipeline-matcher 'matchesValue(content, "error")' --context ROUTING_RULE
+dtctl verify openpipeline-matcher 'matchesValue(content, "error")' --config-id logs
+
+# Verify a DQL processor script
+dtctl verify openpipeline-dql-processor 'parse content, "IPV4:ip"'
+dtctl verify openpipeline-dql-processor -f processor.dql --config-id logs
+
+# Preview a processor against its embedded sample records (-f required; pass the
+# processor body itself — dtctl builds the request envelope around it). The body
+# must be a complete processor definition; the endpoint validates the full schema
+# and rejects a partial body. A minimal DQL processor:
+#   {"type":"dql","id":"preview","description":"preview","enabled":true,
+#    "matcher":"true","dqlScript":"fieldsAdd severity = \"INFO\"",
+#    "sampleData":"{\"content\":\"hello\"}"}
+dtctl exec preview-processor -f processor.json
+dtctl exec preview-processor -f processor.json --config-id logs
+cat processor.json | dtctl exec preview-processor -f -
+
+# Structured output on any of them (verify: json/yaml/toon; preview also table/csv)
+dtctl verify openpipeline-matcher 'matchesValue(content, "error")' -o json
+dtctl verify openpipeline-dql-processor 'parse content, "x"' -o yaml
+dtctl exec preview-processor -f processor.json -o yaml
+```
+
+The two `verify` commands **exit non-zero on an invalid verdict** in every output mode (including `-A`), so they drop straight into CI and agent pipelines without parsing JSON. Diagnostics (severity, message, source position) are surfaced in all formats. All three need only `openpipeline:configurations:read` — already in the read scope tier, so no new grants.
+
 ### Translate Classic Pipelines to OpenPipeline
 
-Migrating from Classic pipelines to OpenPipeline? `dtctl get classic-pipelines-translation` converts your tenant's Classic pipeline configuration for a scope into an OpenPipeline configuration pipeline (Settings shape). It is a read-only call that returns the translated pipeline verbatim — the reliable starting point you then review and apply via the Settings API.
+Migrating from Classic pipelines to OpenPipeline? `dtctl translate classic-pipelines` converts your tenant's Classic pipeline configuration for a scope into an OpenPipeline configuration pipeline (Settings shape). It is a read-only call that returns the translated pipeline verbatim — the reliable starting point you then review and apply via the Settings API.
 
 ```bash
 # Translate the logs Classic pipeline (pretty-printed pipeline document)
-dtctl get classic-pipelines-translation logs
+dtctl translate classic-pipelines logs
 
 # Translate business events and export as YAML for review/editing
-dtctl get classic-pipelines-translation bizevents -o yaml > reference-pipeline.yaml
+dtctl translate classic-pipelines bizevents -o yaml > reference-pipeline.yaml
 
 # Print the translated pipeline as JSON
-dtctl get classic-pipelines-translation logs -o json
+dtctl translate classic-pipelines logs -o json
 
 # Skip disabled rules in the translation (overrides the server default)
-dtctl get classic-pipelines-translation logs --skip-disabled-rules=true
+dtctl translate classic-pipelines logs --skip-disabled-rules=true
 ```
 
 The scope is a positional argument and must be `logs` or `bizevents`. Every output format emits the translated pipeline document directly (no `{value, withWarning}` wrapper), so the exported file is applyable as-is. The translation is deterministic where possible; when a processing rule's definition script could not be translated automatically (`withWarning=true`), a warning is printed to stderr (and carried in the agent envelope under `-A`) and that part needs a manual rewrite. Apply the reviewed result with `dtctl create settings --schema builtin:openpipeline.<scope>.pipelines -f <file>`.
@@ -3240,9 +3309,10 @@ dtctl get breakpoints
 dtctl describe OrderController.java:306
 dtctl describe dtctl-rule-123
 
-# Edit condition / enabled state
+# Edit condition / enabled state / log message
 dtctl update breakpoint OrderController.java:306 --condition "orderId != null"
 dtctl update breakpoint OrderController.java:306 --enabled false
+dtctl update breakpoint OrderController.java:306 --log-message "Hit on {frame.filename}:{frame.line} order={orderId}"
 
 # Delete by ID, by location, or all
 dtctl delete breakpoint dtctl-rule-123
@@ -3250,21 +3320,36 @@ dtctl delete breakpoint OrderController.java:306
 dtctl delete breakpoint --all -y
 ```
 
-### Decoded snapshot output
+### Get snapshots
+
+Fetch snapshots captured by a breakpoint by location or stable rule ID:
 
 ```bash
-# Simplified (variant wrappers flattened to plain values)
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots
+# By location
+dtctl get snapshots OrderController.java:306
+
+# By stable rule ID (shown after create or in get breakpoints)
+dtctl get snapshots dtctl-rule-5bfb45a29fce7a46
+
+# Decoded snapshot output (variant wrappers flattened to plain values)
+dtctl get snapshots OrderController.java:306 --decode-snapshots
 
 # Full decoded tree with type annotations
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots=full
+dtctl get snapshots OrderController.java:306 --decode-snapshots=full
 
-# Compose with any output format
-dtctl query "fetch application.snapshots | limit 5" --decode-snapshots -o json
-dtctl query "fetch application.snapshots | limit 5" --decode-snapshots -o yaml
+# Structured output
+dtctl get snapshots OrderController.java:306 -o json
+dtctl get snapshots OrderController.java:306 -o yaml
+
+# Scope to a time window
+dtctl get snapshots OrderController.java:306 \
+  --default-timeframe-start 2024-01-01T00:00:00Z \
+  --default-timeframe-end   2024-01-02T00:00:00Z
 ```
 
 `--decode-snapshots` enriches each record with `parsed_snapshot` decoded from `snapshot.data` and `snapshot.string_map`. By default, variant wrappers are simplified to plain values; use `--decode-snapshots=full` to preserve type annotations.
+
+The breakpoint log message (shown in `get`/`describe` and set via `update breakpoint --log-message`) supports `{variable}` placeholders — `{frame.*}` for the hit location, any other name (for example `{orderId}`) for a captured variable. Use the short form; messages are displayed the same way in `get` and `describe`.
 
 ---
 
@@ -3627,7 +3712,7 @@ dtctl skills uninstall --cross-client
 dtctl skills install --list
 ```
 
-Supported agents: **claude**, **copilot**, **cursor**, **junie**, **kiro**, **opencode**, **openclaw**.
+Supported agents: **claude**, **codex**, **copilot**, **cursor**, **junie**, **kiro**, **opencode**, **openclaw**.
 
 ---
 
@@ -4008,6 +4093,7 @@ The detection is automatic and doesn't affect functionality. Supported AI agents
 - Kiro (`KIRO` env var)
 - Junie (`JUNIE` env var)
 - OpenClaw (`OPENCLAW` env var)
+- OpenAI Codex CLI (`CODEX` env var)
 - Codeium (`CODEIUM_AGENT` env var)
 - TabNine (`TABNINE_AGENT` env var)
 - Amazon Q (`AMAZON_Q` env var)

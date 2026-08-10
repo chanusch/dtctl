@@ -307,11 +307,26 @@ func (h *Handler) Delete(ctx context.Context, id string, version int) error {
 
 // CreateRequest contains the data needed to create a new document
 type CreateRequest struct {
-	ID          string // Optional - if not provided, system generates one
-	Name        string // Required
-	Type        string // Required - e.g., "dashboard", "notebook"
-	Description string // Optional
-	Content     []byte // Required - the document content
+	ID          string   // Optional - if not provided, system generates one
+	Name        string   // Required
+	Type        string   // Required - e.g., "dashboard", "notebook"
+	Description string   // Optional
+	Content     []byte   // Required - the document content
+	Labels      []string // Optional - classification labels stored in document metadata
+}
+
+// addLabelParts appends each label as its own "labels" multipart form field.
+// The Documents API models labels on write as a repeated form field — one part
+// per label, value taken verbatim — the symmetric counterpart to the JSON array
+// returned on read. Providing labels replaces the document's full label set;
+// omitting them (nil/empty slice) leaves existing labels untouched.
+//
+// SetMultipartField (rather than FormData.Add) is used so that a labels-only
+// update still switches the request into multipart mode.
+func addLabelParts(r *resty.Request, labels []string) {
+	for _, l := range labels {
+		r.SetMultipartField("labels", "", "", strings.NewReader(l))
+	}
 }
 
 // Create creates a new document
@@ -369,51 +384,72 @@ func (h *Handler) Create(ctx context.Context, req CreateRequest) (*Document, err
 		doc.Type = req.Type
 	}
 
+	// The create endpoint does not accept labels, so apply them with a follow-up
+	// update once the document (and its version) exist. This is not atomic: on
+	// failure the document is already created, so the error names it explicitly.
+	if len(req.Labels) > 0 {
+		labeled, err := h.UpdateDocument(ctx, doc.ID, doc.Version, UpdateRequest{Labels: req.Labels})
+		if err != nil {
+			return doc, fmt.Errorf("document %q created but setting labels failed: %w", doc.ID, err)
+		}
+		return labeled, nil
+	}
+
 	return doc, nil
 }
 
-// Update updates a document's content
-func (h *Handler) Update(ctx context.Context, id string, version int, content []byte, contentType string) (*Document, error) {
-	if contentType == "" {
-		contentType = "application/json"
-	}
-
-	resp, err := h.client.HTTP().R().SetContext(ctx).
-		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version)).
-		SetMultipartField("content", "content", contentType, bytes.NewReader(content)).
-		Patch(fmt.Sprintf("/platform/document/v1/documents/%s", id))
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to update document: %w", err)
-	}
-
-	if err := httpclient.CheckResponse(resp); err != nil {
-		return nil, fmt.Errorf("failed to update document %q: %w", id, err)
-	}
-
-	return parseUpdateResponse(resp, id, version+1, "")
+// UpdateRequest contains the (all optional) fields that can be changed on an
+// existing document via updateDocument. Any zero-valued field is omitted from
+// the request and the API leaves the corresponding attribute unchanged. A
+// non-empty Labels slice replaces the document's entire label set; an empty or
+// nil slice sends no labels, which the API also treats as "no change" (this
+// endpoint offers no way to clear labels).
+type UpdateRequest struct {
+	Content     []byte   // Document content; omitted when empty (content unchanged)
+	ContentType string   // Content-Type for Content; defaults to application/json
+	Name        string   // New name; omitted when empty
+	Description string   // New description; omitted when empty
+	Labels      []string // Replacement label set; omitted when empty
 }
 
-// UpdateWithMetadata updates a document's content and optionally its metadata (name, description)
+// Update updates a document's content.
+func (h *Handler) Update(ctx context.Context, id string, version int, content []byte, contentType string) (*Document, error) {
+	return h.UpdateDocument(ctx, id, version, UpdateRequest{Content: content, ContentType: contentType})
+}
+
+// UpdateWithMetadata updates a document's content and optionally its metadata (name, description).
 func (h *Handler) UpdateWithMetadata(ctx context.Context, id string, version int, content []byte, contentType string, name string, description string) (*Document, error) {
-	if contentType == "" {
-		contentType = "application/json"
-	}
+	return h.UpdateDocument(ctx, id, version, UpdateRequest{
+		Content:     content,
+		ContentType: contentType,
+		Name:        name,
+		Description: description,
+	})
+}
 
+// UpdateDocument performs a partial update of a document via the updateDocument
+// endpoint. It is the general form behind Update / UpdateWithMetadata and is the
+// only write path that can set labels (the create endpoint cannot).
+func (h *Handler) UpdateDocument(ctx context.Context, id string, version int, req UpdateRequest) (*Document, error) {
 	r := h.client.HTTP().R().SetContext(ctx).
-		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version)).
-		SetMultipartField("content", "content", contentType, bytes.NewReader(content))
+		SetQueryParam("optimistic-locking-version", fmt.Sprintf("%d", version))
 
-	// Add name and description if provided
-	if name != "" {
-		r.SetMultipartFormData(map[string]string{"name": name})
+	if len(req.Content) > 0 {
+		contentType := req.ContentType
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		r.SetMultipartField("content", "content", contentType, bytes.NewReader(req.Content))
 	}
-	if description != "" {
-		r.SetMultipartFormData(map[string]string{"description": description})
+	if req.Name != "" {
+		r.SetMultipartFormData(map[string]string{"name": req.Name})
 	}
+	if req.Description != "" {
+		r.SetMultipartFormData(map[string]string{"description": req.Description})
+	}
+	addLabelParts(r, req.Labels)
 
 	resp, err := r.Patch(fmt.Sprintf("/platform/document/v1/documents/%s", id))
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to update document: %w", err)
 	}
@@ -422,7 +458,7 @@ func (h *Handler) UpdateWithMetadata(ctx context.Context, id string, version int
 		return nil, fmt.Errorf("failed to update document %q: %w", id, err)
 	}
 
-	return parseUpdateResponse(resp, id, version+1, name)
+	return parseUpdateResponse(resp, id, version+1, req.Name)
 }
 
 // parseUpdateResponse parses an update/create response that may be either
@@ -468,6 +504,7 @@ func metadataToDocument(m *DocumentMetadata) *Document {
 		IsPrivate:   m.IsPrivate,
 		Created:     m.ModificationInfo.CreatedTime,
 		Modified:    m.ModificationInfo.LastModifiedTime,
+		Labels:      m.Labels,
 	}
 }
 
@@ -505,14 +542,35 @@ func extractIDFromResponse(body []byte) string {
 
 // DirectShare represents a direct share for a document
 type DirectShare struct {
-	ID         string `json:"id"`
-	DocumentID string `json:"documentId"`
-	Access     string `json:"access"`
+	ID         string   `json:"id"`
+	DocumentID string   `json:"documentId"`
+	Access     []string `json:"access"`
+}
+
+// ExactAccess reports whether the share grants exactly the given access level.
+func (s DirectShare) ExactAccess(level string) bool {
+	want := accessToLevels(level)
+	if len(s.Access) != len(want) {
+		return false
+	}
+	for _, w := range want {
+		found := false
+		for _, a := range s.Access {
+			if a == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // DirectShareList represents a list of direct shares
 type DirectShareList struct {
-	Shares      []DirectShare `json:"directShares"`
+	Shares      []DirectShare `json:"direct-shares"`
 	TotalCount  int           `json:"totalCount"`
 	NextPageKey string        `json:"nextPageKey,omitempty"`
 }
@@ -552,30 +610,61 @@ func (h *Handler) CreateDirectShare(ctx context.Context, req CreateDirectShareRe
 	return &result, nil
 }
 
-// ListDirectShares lists direct shares for a document
+// ListDirectShares lists direct shares for a document.
+// Paginates automatically using the Document API style (page-size sent on every request).
 func (h *Handler) ListDirectShares(ctx context.Context, documentID string) (*DirectShareList, error) {
-	req := h.client.HTTP().R().SetContext(ctx)
+	var allShares []DirectShare
+	var totalCount int
+	nextPageKey := ""
 
+	filterStr := ""
 	if documentID != "" {
-		req.SetQueryParam("filter", fmt.Sprintf("documentId=='%s'", escapeFilterValue(documentID)))
+		filterStr = fmt.Sprintf("documentId=='%s'", escapeFilterValue(documentID))
 	}
 
-	resp, err := req.Get("/platform/document/v1/direct-shares")
+	for {
+		var result DirectShareList
+		req := h.client.HTTP().R().SetContext(ctx)
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to list direct shares: %w", err)
+		filters := map[string]string{}
+		if filterStr != "" {
+			filters["filter"] = filterStr
+		}
+
+		req.SetQueryParamsFromValues(httpclient.PaginationParams{
+			Style:         httpclient.PaginationDocumentAPI,
+			PageKeyParam:  "page-key",
+			PageSizeParam: "page-size",
+			NextPageKey:   nextPageKey,
+			Filters:       filters,
+		}.QueryParams())
+
+		resp, err := req.Get("/platform/document/v1/direct-shares")
+		if err != nil {
+			return nil, fmt.Errorf("failed to list direct shares: %w", err)
+		}
+
+		if err := httpclient.CheckResponse(resp); err != nil {
+			return nil, fmt.Errorf("failed to list direct shares: %w", err)
+		}
+
+		if err := json.Unmarshal(resp.Body(), &result); err != nil {
+			return nil, fmt.Errorf("list direct shares: parse response: %w", err)
+		}
+
+		allShares = append(allShares, result.Shares...)
+		totalCount = result.TotalCount
+
+		if result.NextPageKey == "" {
+			break
+		}
+		nextPageKey = result.NextPageKey
 	}
 
-	if err := httpclient.CheckResponse(resp); err != nil {
-		return nil, fmt.Errorf("failed to list direct shares: %w", err)
-	}
-
-	var result DirectShareList
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
-		return nil, fmt.Errorf("list direct shares: parse response: %w", err)
-	}
-
-	return &result, nil
+	return &DirectShareList{
+		Shares:     allShares,
+		TotalCount: totalCount,
+	}, nil
 }
 
 // DeleteDirectShare deletes a direct share

@@ -90,6 +90,23 @@ func TestConfig_SetContext(t *testing.T) {
 	}
 }
 
+func TestConfig_SetContext_NormalizesEnvironmentScheme(t *testing.T) {
+	cfg := NewConfig()
+
+	// A bare host without a scheme must be stored with https:// so that later
+	// queries don't fail with "unsupported protocol scheme".
+	cfg.SetContext("dev", "abc12345.apps.dynatrace.com", "dev-token")
+	if got := cfg.Contexts[0].Context.Environment; got != "https://abc12345.apps.dynatrace.com" {
+		t.Errorf("Environment = %v, want https://abc12345.apps.dynatrace.com", got)
+	}
+
+	// An explicit scheme is preserved as-is.
+	cfg.SetContext("local", "http://127.0.0.1:8080", "local-token")
+	if got := cfg.Contexts[1].Context.Environment; got != "http://127.0.0.1:8080" {
+		t.Errorf("Environment = %v, want http://127.0.0.1:8080", got)
+	}
+}
+
 func TestConfig_SetToken(t *testing.T) {
 	cfg := NewConfig()
 
@@ -2299,6 +2316,41 @@ func TestConfig_PruneEmptyEnvironments(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestContext_AccountUUIDRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := NewConfig()
+	cfg.CurrentContext = "prod"
+	cfg.Contexts = []NamedContext{
+		{
+			Name: "prod",
+			Context: Context{
+				Environment: "https://abc12345.apps.dynatrace.com",
+				TokenRef:    "prod-token",
+				AccountUUID: "aaaabbbb-cccc-dddd-eeee-ffffaaaabbbb",
+			},
+		},
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if len(loaded.Contexts) != 1 {
+		t.Fatalf("want 1 context, got %d", len(loaded.Contexts))
+	}
+	got := loaded.Contexts[0].Context.AccountUUID
+	want := cfg.Contexts[0].Context.AccountUUID
+	if got != want {
+		t.Errorf("AccountUUID = %q, want %q", got, want)
 	}
 }
 

@@ -195,6 +195,11 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
 	warnings = append(warnings, notifWarnings...)
 	suggestions = append(notifSuggestions, suggestions...)
+	scanWarnings, scanSuggestions := heavyScanAdvice(result)
+	warnings = append(warnings, scanWarnings...)
+	suggestions = append(suggestions, scanSuggestions...)
+	suggestions = append(suggestions, windowAdvice(query, records, opts)...)
+	suggestions = append(suggestions, lookbackAdvice(query)...)
 
 	total := len(records)
 	ctx := &output.ResponseContext{
@@ -214,6 +219,7 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          manifest,
 		Context:         ctx,
+		Metadata:        envelopeMetadata(result, opts),
 	}
 	return resp, true, nil
 }
@@ -236,18 +242,16 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 	}
 
 	res := &output.InlineRecords{Kind: output.KindRecords, Records: records}
-	// Agent mode defaults --metadata to "all"; preserve that provenance under the
-	// result payload (it previously rode alongside the bare records map).
-	if len(opts.MetadataFields) > 0 {
-		if meta := extractQueryMetadata(result); meta != nil {
-			res.Metadata = output.MetadataToMap(meta, opts.MetadataFields)
-		}
-	}
 
 	// Even an inline (small) result can be PARTIAL — a scan-limit stop can leave
 	// few rows. Surface the same notification advice so the agent isn't misled
 	// into treating a truncated scan as the complete answer.
 	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
+	scanWarnings, scanSuggestions := heavyScanAdvice(result)
+	notifWarnings = append(notifWarnings, scanWarnings...)
+	notifSuggestions = append(notifSuggestions, scanSuggestions...)
+	notifSuggestions = append(notifSuggestions, windowAdvice(query, records, opts)...)
+	notifSuggestions = append(notifSuggestions, lookbackAdvice(query)...)
 
 	total := len(records)
 	ctx := &output.ResponseContext{
@@ -266,7 +270,26 @@ func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryRespon
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          res,
 		Context:         ctx,
+		Metadata:        envelopeMetadata(result, opts),
 	}, true, nil
+}
+
+// envelopeMetadata returns the Grail/metrics query metadata for the agent
+// envelope's top-level `metadata` key, honoring --metadata field selection. It
+// returns nil when metadata was not requested (MetadataFields empty) or the
+// response carried none, so the key is omitted rather than emitted empty. Agent
+// mode defaults --metadata to "all", so an agent gets the metadata by default
+// without asking for it; the same placement is used for inline and spilled
+// results.
+func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interface{} {
+	if len(opts.MetadataFields) == 0 {
+		return nil
+	}
+	meta := extractQueryMetadata(result)
+	if meta == nil {
+		return nil
+	}
+	return output.MetadataToMap(meta, opts.MetadataFields)
 }
 
 // resolveSpillTarget decides the format, destination path, and base dir for a

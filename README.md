@@ -60,7 +60,7 @@ Token-based authentication and multi-environment configuration are covered in th
 ## Why dtctl?
 
 - **Familiar CLI conventions**: `get`, `describe`, `edit`, `apply`, `delete`. If you (or your AI) know `kubectl`, you already know dtctl.
-- **Built for AI agents**: Structured output (`--agent`), machine-readable command catalog (`dtctl commands`), and a bundled [Agent Skill](https://agentskills.io) that teaches AI assistants how to operate Dynatrace
+- **Built for AI agents**: Structured output (`--agent`), machine-readable command catalog (`dtctl commands`), environment data discovery (`dtctl inventory`), and a bundled [Agent Skill](https://agentskills.io) that teaches AI assistants how to operate Dynatrace
 - **Multi-environment**: Switch between dev/staging/prod with a single command; safety levels prevent accidental changes
 - **Watch mode**: Real-time monitoring with `--watch` for all resources
 - **DQL passthrough**: Execute queries directly, with template variables and file-based input
@@ -89,12 +89,13 @@ Token-based authentication and multi-environment configuration are covered in th
 | Notifications | get, describe, delete, watch |
 | Users & Groups | get, describe |
 | Live Debugger | breakpoints, workspace filters, snapshot decoding |
+| Platform Tokens | account create/list/delete token (`dt0s16.*` via Account Management API) |
 
 See the **[Command Reference](https://dynatrace-oss.github.io/dtctl/docs/command-reference/)** for the full list of verbs, flags, resource types, and aliases.
 
 ## AI Agent Skills
 
-dtctl ships with an [Agent Skill](https://agentskills.io) that teaches AI coding assistants how to use dtctl. Agents can also bootstrap at runtime with `dtctl commands`, which prints a compact minimal overview of verbs, resources, and subcommands (defaults to TOON); add `--brief` or `--full` for progressively more detail.
+dtctl ships with an [Agent Skill](https://agentskills.io) that teaches AI coding assistants how to use dtctl. Agents can also bootstrap at runtime with `dtctl commands`, which prints a compact minimal overview of verbs, resources, and subcommands (defaults to TOON); add `--brief` or `--full` for progressively more detail. Where `dtctl commands` answers *"what can I run?"*, `dtctl inventory` answers *"what is there to query?"* — it probes the current environment (read-only, budgeted) for fetchable data objects, buckets, filter segments, a live entity-type census, and capabilities present or absent, with the evidence cited for every absent one. The capability set is customizable via `--definitions` (see `docs/dev/examples/inventory-definitions.example.yaml`).
 
 ```bash
 # Install via skills.sh
@@ -109,7 +110,7 @@ dtctl skills install --global     # User-wide installation
 cp -r skills/dtctl ~/.agents/skills/   # Cross-client (any agent)
 ```
 
-Compatible with GitHub Copilot, Claude Code, Cursor, Kiro, Junie, OpenCode, OpenClaw, and other [Agent Skills](https://agentskills.io)-compatible tools. See the **[AI Agent Mode docs](https://dynatrace-oss.github.io/dtctl/docs/ai-agent-mode/)** for details on the structured JSON envelope and agent auto-detection.
+Compatible with GitHub Copilot, Claude Code, OpenAI Codex CLI, Cursor, Kiro, Junie, OpenCode, OpenClaw, and other [Agent Skills](https://agentskills.io)-compatible tools. See the **[AI Agent Mode docs](https://dynatrace-oss.github.io/dtctl/docs/ai-agent-mode/)** for details on the structured JSON envelope and agent auto-detection.
 
 ### Dynatrace domain skills
 

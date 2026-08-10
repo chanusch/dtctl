@@ -103,9 +103,16 @@ func toSDKDocument(d *Document) *sdkdocument.Document {
 
 // DirectShare is the CLI read model for a direct share.
 type DirectShare struct {
-	ID         string `json:"id" table:"ID"`
-	DocumentID string `json:"documentId" table:"DOCUMENT_ID"`
-	Access     string `json:"access" table:"ACCESS"`
+	ID         string   `json:"id" table:"ID"`
+	DocumentID string   `json:"documentId" table:"DOCUMENT_ID"`
+	Access     []string `json:"access" table:"ACCESS"`
+}
+
+// ExactAccess reports whether the share grants exactly the given access level.
+// Delegates to the SDK DirectShare.ExactAccess method.
+func (s DirectShare) ExactAccess(level string) bool {
+	sdkShare := sdkdocument.DirectShare{Access: s.Access}
+	return sdkShare.ExactAccess(level)
 }
 
 // fromSDKDirectShare converts an SDK DirectShare to the CLI DirectShare.
@@ -251,6 +258,7 @@ type (
 	ShareInfo                     = sdkdocument.ShareInfo
 	UserContext                   = sdkdocument.UserContext
 	CreateRequest                 = sdkdocument.CreateRequest
+	UpdateRequest                 = sdkdocument.UpdateRequest
 	SsoEntity                     = sdkdocument.SsoEntity
 	CreateDirectShareRequest      = sdkdocument.CreateDirectShareRequest
 	CreateEnvironmentShareRequest = sdkdocument.CreateEnvironmentShareRequest
@@ -329,6 +337,12 @@ func (h *Handler) GetMetadata(id string) (*DocumentMetadata, error) {
 	return h.sdk.GetMetadata(context.Background(), id)
 }
 
+// IsNotFound reports whether err indicates the document does not exist (HTTP 404),
+// as opposed to a transient, auth, or other failure.
+func IsNotFound(err error) bool {
+	return errors.Is(err, httpclient.ErrNotFound)
+}
+
 // GetRaw retrieves a document's content as raw bytes.
 func (h *Handler) GetRaw(id string) ([]byte, error) {
 	doc, err := h.sdk.Get(context.Background(), id)
@@ -364,6 +378,17 @@ func (h *Handler) Update(id string, version int, content []byte, contentType str
 // UpdateWithMetadata updates a document's content and optionally its metadata (name, description).
 func (h *Handler) UpdateWithMetadata(id string, version int, content []byte, contentType string, name string, description string) (*Document, error) {
 	d, err := h.sdk.UpdateWithMetadata(context.Background(), id, version, content, contentType, name, description)
+	if err != nil {
+		return nil, err
+	}
+	return fromSDKDocument(d), nil
+}
+
+// UpdateDocument performs a partial update of a document (content, name,
+// description, and/or labels). It is the general form behind Update /
+// UpdateWithMetadata and the only write path that can set labels.
+func (h *Handler) UpdateDocument(id string, version int, req UpdateRequest) (*Document, error) {
+	d, err := h.sdk.UpdateDocument(context.Background(), id, version, req)
 	if err != nil {
 		return nil, err
 	}

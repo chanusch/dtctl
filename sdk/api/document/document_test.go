@@ -235,6 +235,73 @@ func TestListEnvironmentShares(t *testing.T) {
 	}
 }
 
+func TestListDirectShares(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/direct-shares", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// The API returns the array under the kebab-case "direct-shares" key, and access as
+		// an array, both matching environment-shares.
+		_, _ = w.Write([]byte(`{"direct-shares":[{"id":"share-1","documentId":"doc-123","access":["read"]}],"totalCount":1}`))
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	result, err := h.ListDirectShares(context.Background(), "doc-123")
+	if err != nil {
+		t.Fatalf("ListDirectShares() error: %v", err)
+	}
+	if len(result.Shares) != 1 {
+		t.Fatalf("got %d shares, want 1", len(result.Shares))
+	}
+	if result.Shares[0].ID != "share-1" {
+		t.Errorf("got share ID %q, want share-1", result.Shares[0].ID)
+	}
+	if !result.Shares[0].ExactAccess("read") {
+		t.Errorf("got access %v, want exactly read", result.Shares[0].Access)
+	}
+}
+
+func TestListDirectShares_Paginated(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/direct-shares", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if f := r.URL.Query().Get("filter"); f != "documentId=='doc-123'" {
+			t.Errorf("filter = %q, want the document filter on every page", f)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page-key") {
+		case "":
+			_, _ = w.Write([]byte(`{"direct-shares":[{"id":"share-1","documentId":"doc-123","access":["read"]}],` +
+				`"totalCount":2,"nextPageKey":"page2token"}`))
+		case "page2token":
+			_, _ = w.Write([]byte(`{"direct-shares":[{"id":"share-2","documentId":"doc-123","access":["read"]}],` +
+				`"totalCount":2}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"error":{"message":"unknown page key"}}`)
+		}
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	result, err := h.ListDirectShares(context.Background(), "doc-123")
+	if err != nil {
+		t.Fatalf("ListDirectShares() error: %v", err)
+	}
+	if len(result.Shares) != 2 {
+		t.Errorf("got %d shares, want 2 - later pages are dropped", len(result.Shares))
+	}
+	if result.TotalCount != 2 {
+		t.Errorf("TotalCount = %d, want 2", result.TotalCount)
+	}
+	if callCount != 2 {
+		t.Errorf("API called %d times, want 2", callCount)
+	}
+}
+
 func TestDeleteEnvironmentShare(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/platform/document/v1/environment-shares/share-1", func(w http.ResponseWriter, r *http.Request) {

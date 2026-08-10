@@ -123,6 +123,88 @@ Notes:
   file (never a zero-byte file): it carries the DQL schema when types are known,
   otherwise a single placeholder column so the file stays readable by mainstream
   tooling (a column-less file is rejected by DuckDB, pyarrow, and pandas).
+- **Parquet files also carry the DQL types in the file footer**, under the
+  key-value metadata key `dtctl.dql.types` (a JSON object mapping column name to
+  DQL type, e.g. `{"status.code":"long","content":"string"}`). This lets a reader
+  recover type information the physical schema alone loses — a Grail `long` is
+  stored as `INT64`, but Grail's own JSON serialiser emits it as a quoted string,
+  so a consumer reproducing Grail's wire form needs the declared type to know
+  which columns to stringify. The footer records **every** declared column,
+  including ones that were null in every row (Grail omits null fields from
+  records, so such a column has no physical column in the file). Read it with
+  DuckDB's `parquet_kv_metadata()` or any Parquet footer reader.
+
+## Column types (`--include-types`)
+
+Pass `--include-types` to surface the DQL per-column type information the query
+API returns. In `json` and `yaml` output it appears as a top-level `types` key
+alongside `records`, preserving the API's shape (`indexRange` + `mappings`):
+
+```bash
+dtctl query 'fetch logs | limit 1' -o json --include-types
+# {
+#   "records": [ { "content": "...", "loglevel": "INFO", "status.code": "200" } ],
+#   "types": [
+#     {
+#       "indexRange": [0, 0],
+#       "mappings": {
+#         "content":     { "type": "string" },
+#         "loglevel":    { "type": "string" },
+#         "status.code": { "type": "long" }
+#       }
+#     }
+#   ]
+# }
+```
+
+Notes:
+
+- **Only with an explicit flag.** The block is emitted only when you pass
+  `--include-types` yourself. `--typed` and Parquet output request the same
+  metadata internally to do their work, but that does not add the `types` key.
+- **`json`/`yaml` only.** `jsonl` (one record per line) and `csv` (tabular) have
+  no place for a document-level sibling, so the block is not emitted there.
+- Note the distinction from `--typed` below: `--include-types` reports the
+  declared type while leaving values in their wire form (so a `long` still reads
+  as `"200"`), whereas `--typed` uses the same metadata to rewrite the values.
+
+## Numeric typing (`--typed`)
+
+The Grail query API deliberately serialises integer-valued columns (`long`,
+`duration`) as JSON **strings** to preserve full int64 precision for
+JavaScript/TypeScript consumers. dtctl's `json`, `yaml`, and `jsonl` output
+faithfully passes that through, so a `count()` reads as `"42"` (a string):
+
+```bash
+dtctl query 'fetch logs | summarize c = count()' -o json
+# [ { "c": "42" } ]
+```
+
+Pass `--typed` to cast scalar columns to their native types using the DQL type
+metadata — `long`/`duration` become JSON numbers, `boolean` becomes a real
+boolean — so the output is ready for `jq`, pandas, or DuckDB without a
+`tonumber` step:
+
+```bash
+dtctl query 'fetch logs | summarize c = count()' -o json --typed
+# [ { "c": 42 } ]
+```
+
+Notes:
+
+- **Opt-in by design.** The default output stays faithful to the API's wire
+  encoding. `--typed` implies `--include-types` so the type metadata is
+  available.
+- **Precision-safe in dtctl.** A `long` is emitted as its full decimal digits,
+  unquoted and lossless (never routed through a float). The only precision risk
+  is in a downstream consumer that parses JSON numbers as 64-bit floats (browser
+  `JSON.parse`, older `jq`) — which is exactly why it is opt-in.
+- **Timestamps stay strings.** JSON/YAML have no native date type, so `timestamp`
+  columns keep their portable RFC3339 string form. `string`, `ip`, `timeframe`,
+  and nested record/array columns are left unchanged.
+- Values that do not cleanly parse to their declared type (including non-finite
+  doubles such as `"NaN"`/`"Infinity"`, which JSON cannot represent) are left as
+  strings rather than failing the output.
 
 ## Plain Mode
 

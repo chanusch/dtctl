@@ -138,6 +138,21 @@ func TestDetectResourceType(t *testing.T) {
 			wantErr:  false,
 		},
 		{
+			name: "aws monitoring config",
+			input: `{
+				"scope": "integration-aws",
+				"value": {
+					"description": "aws-monitoring",
+					"enabled": true,
+					"aws": {
+						"credentials": []
+					}
+				}
+			}`,
+			expected: ResourceAWSMonitoringConfig,
+			wantErr:  false,
+		},
+		{
 			name: "unknown resource",
 			input: `{
 				"random": "field"
@@ -445,6 +460,46 @@ func TestExtractDocumentContent(t *testing.T) {
 	}
 }
 
+func TestExtractDocumentContent_NonMapNestedContent(t *testing.T) {
+	tests := []struct {
+		name  string
+		inner interface{}
+	}{
+		{"string", "# Welcome to the team"},
+		{"nil", nil},
+		{"slice", []interface{}{"a"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := map[string]interface{}{
+				"name": "Launchpad",
+				"content": map[string]interface{}{
+					"content": tt.inner,
+					"format":  "markdown",
+				},
+			}
+
+			contentData, name, _, warnings := extractDocumentContent(doc, "launchpad")
+
+			if name != "Launchpad" {
+				t.Errorf("name = %q, want %q", name, "Launchpad")
+			}
+			if len(warnings) != 0 {
+				t.Errorf("got %d warnings, want 0: %v", len(warnings), warnings)
+			}
+
+			var content map[string]interface{}
+			if err := json.Unmarshal(contentData, &content); err != nil {
+				t.Fatalf("contentData is not valid JSON: %v", err)
+			}
+			if content["format"] != "markdown" {
+				t.Errorf("format = %v, want markdown - a non-map .content.content must leave the outer content in place", content["format"])
+			}
+		})
+	}
+}
+
 func TestCountDocumentItems(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -513,7 +568,7 @@ func TestItemName(t *testing.T) {
 	}{
 		{"dashboard", "tiles"},
 		{"notebook", "sections"},
-		{"other", "sections"}, // default
+		{"acme:config", "items"}, // custom types get a generic item name
 	}
 
 	for _, tt := range tests {
@@ -628,11 +683,11 @@ func TestDocumentURL(t *testing.T) {
 			expected: "https://abc12345.apps.dynatrace.com/ui/apps/dynatrace.notebooks/notebook/nb-456",
 		},
 		{
-			name:     "other document type URL",
+			name:     "custom document type has no derivable viewer app URL",
 			baseURL:  "https://tenant.apps.dynatrace.com",
-			docType:  "report",
+			docType:  "acme:config",
 			id:       "rpt-789",
-			expected: "https://tenant.apps.dynatrace.com/ui/apps/dynatrace.reports/report/rpt-789",
+			expected: "",
 		},
 	}
 

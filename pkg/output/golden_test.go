@@ -18,16 +18,22 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azuremonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/bucket"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/dqlprocessorverify"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/edgeconnect"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/extension"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpmonitoringconfig"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/hub"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/iam"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherlqltodql"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherverify"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/platformtoken"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/previewprocessor"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/segment"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
+	sdkmatcherverify "github.com/dynatrace-oss/dtctl/sdk/api/matcherverify"
 )
 
 // -update flag: regenerate golden files
@@ -388,6 +394,7 @@ func extensionFixtures() []extension.Extension {
 		{
 			ExtensionName: "com.dynatrace.extension.host-monitoring",
 			Version:       "1.2.3",
+			ActiveVersion: "1.2.0",
 		},
 		{
 			ExtensionName: "com.dynatrace.extension.jmx",
@@ -2648,6 +2655,218 @@ func TestGolden_DescribeExtensionAssets(t *testing.T) {
 				t.Fatalf("Print failed: %v", err)
 			}
 			assertGolden(t, "describe/extension-assets-"+name, buf.String())
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Translate: lql-to-dql
+// ---------------------------------------------------------------------------
+
+func TestGolden_TranslateLqlToDql(t *testing.T) {
+	result := matcherlqltodql.TranslationResult{
+		Query: `matchesValue(log.source, "snmptraps") and matchesValue(snmp.trap_oid, "F5-BIGIP-COMMON-MIB")`,
+	}
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(result); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "translate/lql-to-dql-"+name, buf.String())
+		})
+	}
+}
+
+func platformTokenFixtures() []platformtoken.PlatformToken {
+	return []platformtoken.PlatformToken{
+		{
+			Name:           "ci-pipeline",
+			TokenID:        "a1b2c3d4-e5f6-4a7b-8c9d-000000000001",
+			Status:         "ACTIVE",
+			ExpirationDate: "2026-10-01T00:00:00.000Z",
+			Scope:          "storage:events:read account-idm-read",
+		},
+		{
+			Name:           "dev-automation",
+			TokenID:        "b2c3d4e5-f6a7-4b8c-9d0e-000000000002",
+			Status:         "ACTIVE",
+			ExpirationDate: "2026-12-31T00:00:00.000Z",
+			Scope:          "account-idm-write",
+		},
+		{
+			Name:           "legacy-token",
+			TokenID:        "c3d4e5f6-a7b8-4c9d-0e1f-000000000003",
+			Status:         "REVOKED",
+			ExpirationDate: "2025-01-01T00:00:00.000Z",
+			Scope:          "storage:logs:read",
+		},
+	}
+}
+
+func TestGolden_GetPlatformTokens(t *testing.T) {
+	tokens := platformTokenFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"csv":   "csv",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(tokens); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/platform-tokens-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetPlatformTokens_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	printer := NewPrinterWithWriter("table", &buf)
+	if err := printer.PrintList([]platformtoken.PlatformToken{}); err != nil {
+		t.Fatalf("PrintList failed: %v", err)
+	}
+	assertGolden(t, "empty/platform-tokens", buf.String())
+}
+
+// ---------------------------------------------------------------------------
+// OpenPipeline verify and preview golden tests
+// ---------------------------------------------------------------------------
+
+func matcherVerifyResultFixtures() []matcherverify.VerifyResult {
+	return []matcherverify.VerifyResult{
+		*matcherverify.FromSDKVerifyResponse(&sdkmatcherverify.VerifyResponse{Valid: true}),
+		*matcherverify.FromSDKVerifyResponse(&sdkmatcherverify.VerifyResponse{
+			Valid: false,
+			Notifications: []sdkmatcherverify.MetadataNotification{
+				{
+					Severity: "ERROR",
+					Message:  "unexpected token",
+					SyntaxPosition: &sdkmatcherverify.SyntaxRange{
+						Start: sdkmatcherverify.SyntaxPosition{Line: 1, Column: 1, Index: 0},
+						End:   sdkmatcherverify.SyntaxPosition{Line: 1, Column: 6, Index: 5},
+					},
+				},
+				{Severity: "WARN", Message: "expression is deprecated"},
+			},
+		}),
+	}
+}
+
+func TestGolden_VerifyOpenpipelineMatcher(t *testing.T) {
+	fixtures := matcherVerifyResultFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(fixtures); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "verify/openpipeline-matcher-"+name, buf.String())
+		})
+	}
+}
+
+func dqlProcessorVerifyResultFixtures() []dqlprocessorverify.VerifyResult {
+	return []dqlprocessorverify.VerifyResult{
+		*matcherverify.FromSDKVerifyResponse(&sdkmatcherverify.VerifyResponse{Valid: true}),
+		*matcherverify.FromSDKVerifyResponse(&sdkmatcherverify.VerifyResponse{
+			Valid: false,
+			Notifications: []sdkmatcherverify.MetadataNotification{
+				{
+					Severity: "ERROR",
+					Message:  "invalid field reference",
+					SyntaxPosition: &sdkmatcherverify.SyntaxRange{
+						Start: sdkmatcherverify.SyntaxPosition{Line: 2, Column: 5, Index: 0},
+						End:   sdkmatcherverify.SyntaxPosition{Line: 2, Column: 12, Index: 0},
+					},
+				},
+			},
+		}),
+	}
+}
+
+func TestGolden_VerifyOpenpipelineDQLProcessor(t *testing.T) {
+	fixtures := dqlProcessorVerifyResultFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(fixtures); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "verify/openpipeline-dql-processor-"+name, buf.String())
+		})
+	}
+}
+
+func previewProcessorResultFixtures() []previewprocessor.PreviewResult {
+	return []previewprocessor.PreviewResult{
+		{
+			Matched: true,
+			Record: map[string]any{
+				"content":  "error occurred in service-a",
+				"severity": "ERROR",
+				"foo":      float64(1),
+			},
+		},
+		{
+			Matched: false,
+			Record: map[string]any{
+				"content": "info log from service-b",
+			},
+		},
+	}
+}
+
+func TestGolden_ExecPreviewProcessor(t *testing.T) {
+	fixtures := previewProcessorResultFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(fixtures); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "exec/preview-processor-"+name, buf.String())
 		})
 	}
 }

@@ -14,7 +14,7 @@ The current Live Debugger flow in `dtctl` supports:
 - describing breakpoint status with `dtctl describe <id|filename:line>`
 - updating breakpoints with `dtctl update breakpoint ...`
 - deleting breakpoints with `dtctl delete breakpoint ...`
-- viewing decoded snapshot output with `dtctl query ... --decode-snapshots`
+- fetching snapshots for a breakpoint with `dtctl get snapshots <breakpoint> --decode-snapshots`
 
 `dtctl` resolves or creates a Live Debugger workspace for the current project path, so commands operate on the workspace associated with the directory you run them from.
 
@@ -120,6 +120,7 @@ Default output is a table with:
 - filename
 - line number
 - active state
+- log message (with `{variable}` placeholders in their friendly form; see [Log messages](#log-messages))
 
 Structured output is also supported:
 
@@ -143,6 +144,7 @@ dtctl describe OrderController.java:306
 The command uses `GetRuleStatusBreakdown` and summarizes:
 
 - enabled/disabled state
+- log message (see [Log messages](#log-messages))
 - overall status
 - active and pending rooks
 - warnings and errors
@@ -171,11 +173,35 @@ dtctl update breakpoint OrderController.java:306 --enabled true
 dtctl update breakpoint OrderController.java:306 --enabled false
 ```
 
+Change the log message:
+
+```bash
+dtctl update breakpoint OrderController.java:306 --log-message "Hit on {frame.filename}:{frame.line} value={newTodoRecord.title}"
+```
+
+### Log messages
+
+A breakpoint's log message is the line emitted each time the breakpoint is hit.
+It supports `{variable}` placeholders that are interpolated at runtime:
+
+- `{frame.filename}`, `{frame.line}`, and other `frame.*` fields expose the hit
+  location and stack frame.
+- `{myVar.field}` (any other name) references a captured application variable.
+- Reserved namespaces such as `{rook.*}`, `{agent.*}`, `{bp.*}`,
+  `{message_info.*}`, and `{controller.*}` pass through unchanged.
+
+You always use the short, friendly form (e.g. `{frame.line}`), and the message
+is displayed the same way in `get` and `describe`. If `--log-message` is omitted
+on update, the current message is preserved. Passing an empty string
+(`--log-message ""`) resets the message to the default:
+`Hit on {frame.filename}:{frame.line}`.
+
 ### Notes
 
 - identifiers can be either a mutable breakpoint ID or `filename:line`
 - source locations resolve all matching breakpoints in the current workspace
 - `--dry-run` is supported
+- at least one of `--condition`, `--log-message`, or `--enabled` is required
 
 ## 6. Delete breakpoints
 
@@ -210,22 +236,31 @@ dtctl delete breakpoint --all -y
 dtctl delete breakpoint OrderController.java:306 --dry-run
 ```
 
-## 7. View decoded snapshots
+## 7. View snapshots
 
-Live Debugger snapshot data can be decoded using the `--decode-snapshots` flag on `query`.
-
-Example:
+Use `dtctl get snapshots` to fetch snapshots captured by a breakpoint. Specify the breakpoint by location or stable rule ID:
 
 ```bash
-# Simplified output (variant wrappers flattened to plain values)
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots
+# By location (filename:line)
+dtctl get snapshots OrderController.java:306
+
+# By stable rule ID (shown after dtctl create breakpoint or in dtctl get breakpoints)
+dtctl get snapshots dtctl-rule-5bfb45a29fce7a46
+
+# Decode snapshot payloads into readable fields
+dtctl get snapshots OrderController.java:306 --decode-snapshots
 
 # Full decoded tree with type annotations
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots=full
+dtctl get snapshots OrderController.java:306 --decode-snapshots=full
 
-# Compose with any output format
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots -o json
-dtctl query "fetch application.snapshots | sort timestamp desc | limit 5" --decode-snapshots -o yaml
+# Structured output
+dtctl get snapshots OrderController.java:306 -o json
+dtctl get snapshots OrderController.java:306 -o yaml
+
+# Scope to a time window
+dtctl get snapshots OrderController.java:306 \
+  --default-timeframe-start 2024-01-01T00:00:00Z \
+  --default-timeframe-end   2024-01-02T00:00:00Z
 ```
 
 The `--decode-snapshots` flag enriches each record with a decoded `parsed_snapshot` field built from:

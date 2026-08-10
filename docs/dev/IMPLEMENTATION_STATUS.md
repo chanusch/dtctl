@@ -49,8 +49,9 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] `alias` - Manage command aliases (set, list, delete, import, export)
 - [x] `ctx` - Quick context management (list, switch, describe, set, delete)
 - [x] `doctor` - Health check (config, context, token, connectivity, auth)
+- [x] `inventory` - Environment data inventory: fetchable data objects, buckets, entity census, capabilities present/absent with evidence; customizable via `--definitions`
 - [x] `commands` - Machine-readable command catalog (JSON/YAML, `--brief`, resource filter, `howto` subcommand)
-- [x] `skills` - AI agent skill file management (install, uninstall, status for Claude, Copilot, Cursor, Kiro, Junie, OpenCode, OpenClaw; cross-client via `--cross-client`)
+- [x] `skills` - AI agent skill file management (install, uninstall, status for Claude, Codex, Copilot, Cursor, Kiro, Junie, OpenCode, OpenClaw; cross-client via `--cross-client`)
 - [x] `plugin` - kubectl-style exec plugins: unknown commands dispatch to `dtctl-<name>` binaries on PATH (`plugin list`, catalog integration; see [PLUGIN_CONVENTIONS.md](PLUGIN_CONVENTIONS.md))
 
 ### Resources
@@ -82,7 +83,12 @@ This document tracks the current implementation status of dtctl. For future plan
 | intent | ✅ | ✅ | - | - | - | - |
 | segment | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | anomaly-detector | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| classic-pipelines-translation | ✅ | - | - | - | - | - |
+
+#### Account Management
+
+| Resource | list | create | revoke |
+|----------|------|--------|--------|
+| token (account) | ✅ | ✅ | ✅ |
 
 #### Cloud Connections
 
@@ -94,6 +100,13 @@ This document tracks the current implementation status of dtctl. For future plan
 | aws monitoring | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ enable |
 | gcp connection (Preview) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | gcp monitoring (Preview) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ enable |
+
+#### OpenPipeline
+
+| Resource | translate |
+|----------|-----------|
+| classic-pipelines | ✅ |
+| lql-to-dql | ✅ |
 
 #### Advanced Operations
 
@@ -292,9 +305,9 @@ This document tracks the current implementation status of dtctl. For future plan
 ### Live Debugger Features (Experimental)
 - [x] Configure workspace filters: `dtctl update breakpoint --filters key:value[,key:value...]` (also supports `key=value`)
 - [x] Create breakpoint: `dtctl create breakpoint File.java:line` (optional `--filters key:value[,...]` sets workspace filters in the same step)
-- [x] List breakpoints: `dtctl get breakpoints`
-- [x] Describe breakpoint status by ID or location: `dtctl describe <id|filename:line>`
-- [x] Update breakpoint condition/enabled state: `dtctl update breakpoint <id|filename:line> --condition ... --enabled ...`
+- [x] List breakpoints (table includes log message): `dtctl get breakpoints`
+- [x] Describe breakpoint status by ID or location (shows log message): `dtctl describe <id|filename:line>`
+- [x] Update breakpoint condition/enabled state/log message: `dtctl update breakpoint <id|filename:line> --condition ... --enabled ... --log-message ...`
 - [x] Delete breakpoint by ID/location and bulk delete with confirmation: `dtctl delete breakpoint <id|filename:line|--all> [-y] [--dry-run]`
 - [x] Verbose GraphQL troubleshooting output with `-v/--debug`
 - [x] Safety checks applied to create/update/delete and workspace filter updates

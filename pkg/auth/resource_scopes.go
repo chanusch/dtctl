@@ -118,8 +118,9 @@ var ResourceScopes = map[string]AccessScopes{
 	"user":  {Read: []string{"iam:users:read"}},
 	"group": {Read: []string{"iam:groups:read"}},
 
-	// Live Debugger (single scope covers create/update/delete)
+	// Live Debugger (single scope covers all operations including snapshot queries)
 	"breakpoint": {Read: []string{"dev-obs:breakpoints:set"}, Write: []string{"dev-obs:breakpoints:set"}, Delete: []string{"dev-obs:breakpoints:set"}},
+	"snapshot":   {Read: []string{"dev-obs:breakpoints:set"}},
 
 	// Hub catalog (/platform/hub/v1/catalog/...). dtctl's login requests
 	// hub:catalog:read for this surface (docs/TOKEN_SCOPES.md also lists
@@ -135,7 +136,18 @@ var ResourceScopes = map[string]AccessScopes{
 	// OpenPipeline. The classic-pipelines translation endpoint
 	// (/platform/openpipeline/v1/classic-pipelines/translate) is a read-only
 	// call that returns the translated pipeline document.
-	"classic-pipelines-translation": {Read: []string{"openpipeline:configurations:read"}},
+	"classic-pipelines": {Read: []string{"settings:objects:read"}},
+
+	// LQL-to-DQL matcher translation
+	// (/platform/openpipeline/v1/matcher/lqlToDql) is a read-only stateless
+	// call that converts a single LQL matcher expression into its DQL equivalent.
+	"lql-to-dql": {Read: []string{"openpipeline:configurations:read"}},
+
+	// OpenPipeline verify and preview endpoints — all read-only; they validate
+	// or preview pipeline definitions without persisting any changes.
+	"openpipeline-matcher":       {Read: []string{"openpipeline:configurations:read"}},
+	"openpipeline-dql-processor": {Read: []string{"openpipeline:configurations:read"}},
+	"preview-processor":          {Read: []string{"openpipeline:configurations:read"}},
 
 	// Cloud monitoring (enable/create aws|azure|gcp) touches two APIs: the
 	// hyperscaler-authentication *connection* (Settings API,
@@ -158,11 +170,11 @@ var localResources = map[string]bool{
 	"set-credentials": true, "migrate-tokens": true, "init": true,
 	"view": true, "current": true, "set": true,
 	// ctx aliases
-	"describe": true, "delete": true, "token": true,
+	"describe": true, "delete": true, "token": true, "discover-account": true,
 	// auth (local token storage / introspection)
 	"login": true, "logout": true, "refresh": true, "status": true, "whoami": true,
 	// alias management
-	"export": true, "import": true, "list": true,
+	"export": true, "import": true, "list": true, "create": true,
 	// skills (local install)
 	"install": true, "uninstall": true,
 }
@@ -285,7 +297,11 @@ func (s *scopeSet) addReadTier(extended bool) {
 	s.addResource("edgeconnect", AccessRead)
 	s.addResource("notification", AccessRead)
 	s.add("hub:catalog:read")
-	s.addResource("classic-pipelines-translation", AccessRead)
+	s.addResource("classic-pipelines", AccessRead)
+	s.addResource("lql-to-dql", AccessRead)
+	s.addResource("openpipeline-matcher", AccessRead)
+	s.addResource("openpipeline-dql-processor", AccessRead)
+	s.addResource("preview-processor", AccessRead)
 }
 
 // addMineWrites adds the write/run scopes granted from readwrite-mine upward:
@@ -346,7 +362,11 @@ func (s *scopeSet) addUnrestricted() {
 	s.addResource("edgeconnect", AccessRead)
 	s.addResource("notification", AccessRead)
 	s.add("hub:catalog:read")
-	s.addResource("classic-pipelines-translation", AccessRead)
+	s.addResource("classic-pipelines", AccessRead)
+	s.addResource("lql-to-dql", AccessRead)
+	s.addResource("openpipeline-matcher", AccessRead)
+	s.addResource("openpipeline-dql-processor", AccessRead)
+	s.addResource("preview-processor", AccessRead)
 	// writes / destructive
 	s.addResource("dashboard", AccessWrite, AccessDelete)
 	s.add("document:environment-shares:write")

@@ -623,6 +623,9 @@ func TestRunGetBreakpoints_StructuredView(t *testing.T) {
 	if !strings.Contains(output, "\"id\": \"bp-1\"") || !strings.Contains(output, "\"filename\": \"OrderController.java\"") {
 		t.Fatalf("unexpected structured output: %q", output)
 	}
+	if !strings.Contains(output, "\"logMessage\": \"Hit on {frame.filename}:{frame.line}\"") {
+		t.Fatalf("expected unqualified log message in output: %q", output)
+	}
 }
 
 func TestRunGetBreakpoints_AgentEnvelope(t *testing.T) {
@@ -761,6 +764,29 @@ func TestExtractBreakpointRowsSkipsInvalidRules(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != "ok-1" {
 		t.Fatalf("unexpected rows: %#v", rows)
+	}
+}
+
+func TestPadBreakpointID(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "empty passthrough", id: "", want: ""},
+		{name: "short id padded to 32", id: "abc", want: strings.Repeat("0", 29) + "abc"},
+		{name: "exactly 32 chars passthrough", id: strings.Repeat("a", 32), want: strings.Repeat("a", 32)},
+		{name: "longer than 32 passthrough", id: strings.Repeat("a", 33), want: strings.Repeat("a", 33)},
+		{name: "numeric id padded", id: "12345", want: strings.Repeat("0", 27) + "12345"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := padBreakpointID(tt.id)
+			if got != tt.want {
+				t.Fatalf("padBreakpointID(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
 	}
 }
 

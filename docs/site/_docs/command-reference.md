@@ -25,18 +25,19 @@ dtctl [verb] [resource-type] [resource-name] [flags]
 | `query` | Execute a DQL query |
 | `wait` | Poll a DQL query until a record-count condition is met (tests/CI) |
 | `inspect` | Inspect a spilled query-result file locally (rows, schema, stats) without re-querying Grail |
-| `exec` | Execute a workflow, function, analyzer, or CoPilot skill |
+| `exec` | Execute a workflow, function, analyzer, CoPilot skill, or OpenPipeline processor preview |
 | `history` | Show version history (snapshots) of a document |
 | `restore` | Restore a document to a previous version |
 | `diff` | Show differences between local and remote resources |
 | `enable` | Enable a cloud monitoring configuration (GCP/Azure) in one step |
 | `share` | Share a document with users or groups |
 | `unshare` | Remove sharing from a document |
-| `verify` | Verify DQL query syntax |
+| `verify` | Verify DQL query syntax and OpenPipeline matcher/DQL-processor components |
 | `alias` | Manage command aliases |
 | `ctx` | Quick context management |
 | `doctor` | Health check (config, context, token, connectivity, auth) |
 | `commands` | Machine-readable command catalog for AI agents |
+| `inventory` | Probe the environment: which data, entity types, and capabilities exist here |
 
 ## Global Flags
 
@@ -67,7 +68,7 @@ dtctl supports both singular and plural resource names, plus short aliases.
 | `wfe-task-result` | — | get |
 | `dashboards` | `dashboard`, `dash`, `db` | get, describe, create, edit, delete, apply, share, unshare, history, restore, diff, watch |
 | `notebooks` | `notebook`, `nb` | get, describe, create, edit, delete, apply, share, unshare, history, restore, diff, watch |
-| `documents` | `document`, `doc` | get, describe, create, edit, delete, history, restore |
+| `documents` | `document`, `doc` | get, describe, create, apply, update, edit, delete, history, restore |
 | `trash` | — | get, describe, restore, delete |
 | `slos` | `slo` | get, describe, create, delete, apply, exec (evaluate), watch |
 | `slo-templates` | `slo-template` | get, describe |
@@ -184,6 +185,11 @@ dtctl query "..." --segments-file segments.yaml  # Segments with variables from 
 # Verify query syntax
 dtctl verify query "fetch logs | limit 10"
 dtctl verify query -f query.dql --canonical --fail-on-warn
+
+# Verify OpenPipeline components (restricted DQL subset; exits non-zero if invalid)
+dtctl verify openpipeline-matcher 'matchesValue(content, "error")'
+dtctl verify openpipeline-matcher -f matcher.dql --context ROUTING_RULE
+dtctl verify openpipeline-dql-processor 'parse content, "IPV4:ip"' --config-id logs
 ```
 
 ## Inspect Commands
@@ -275,6 +281,10 @@ dtctl exec copilot "What is DQL?" --stream
 dtctl exec copilot nl2dql "error logs from last hour"
 dtctl exec copilot dql2nl "fetch logs | filter status='ERROR'"
 dtctl exec copilot document-search "CPU analysis" --collections notebooks
+
+# OpenPipeline processor preview (dry-run against embedded sample records; -f required)
+dtctl exec preview-processor -f processor.json
+dtctl exec preview-processor -f processor.json --config-id logs
 ```
 
 ## Diff Command
@@ -334,6 +344,17 @@ dtctl commands --full -o json     # Full catalog: descriptions, flag defaults, g
 dtctl commands workflow -o json   # Filter to specific resource
 dtctl commands howto              # Generate Markdown how-to guide
 ```
+
+## Environment Inventory
+
+```bash
+dtctl inventory                                  # What data exists HERE: objects, buckets, census, capabilities
+dtctl inventory -o json                          # Structured, full lists
+dtctl inventory --definitions ./caps.yaml        # Merge org-specific capability definitions
+dtctl inventory --budget-queries 100 --budget-seconds 300 --scan-limit-gbytes 25
+```
+
+See [Environment Inventory]({{ '/docs/inventory/' | relative_url }}) for the discovery model, verdict semantics, and customization.
 
 ## Common Patterns
 

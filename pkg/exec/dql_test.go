@@ -669,6 +669,28 @@ func TestClassifyNotification(t *testing.T) {
 	}
 }
 
+func TestResultIsPartial(t *testing.T) {
+	partial := []QueryNotification{
+		{NotificationType: "RESULT_LIMIT_RECORDS"},
+		{NotificationType: "RESULT_LIMIT_BYTES"},
+		{NotificationType: "SCAN_LIMIT_GBYTES"},
+		{NotificationType: "FETCH_TIMEOUT"},
+		{NotificationType: "QUERY_CONSUMPTION_LIMIT"},
+		{Message: "Your result has been limited to 1000."},
+	}
+	for _, n := range partial {
+		if !ResultIsPartial(n) {
+			t.Errorf("ResultIsPartial(%+v) = false, want true", n)
+		}
+	}
+	// Sampling is a declared query property, not a silent truncation.
+	for _, n := range []QueryNotification{{NotificationType: "SAMPLING_APPLIED"}, {Message: "all good"}} {
+		if ResultIsPartial(n) {
+			t.Errorf("ResultIsPartial(%+v) = true, want false", n)
+		}
+	}
+}
+
 func TestAgentAdviceForNotification_ScanLimit(t *testing.T) {
 	got := agentAdviceForNotification("SCAN_LIMIT_GBYTES", "")
 	if len(got) == 0 {
@@ -2284,20 +2306,26 @@ func TestDQLExecutor_CancelQuery_EmptyToken(t *testing.T) {
 // before any poll request is sent.  ExecuteQueryWithContext must call query:cancel with
 // the correct token and return (nil, nil).
 func TestDQLExecutor_CancelAfterExecute(t *testing.T) {
-	executeReturned := make(chan struct{})
 	cancelCalled := false
 	cancelToken := ""
+
+	// Declare ctx/cancel before the server so the handler closure can call cancel().
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/platform/storage/query/v1/query:execute":
+			// Cancel ctx before writing the response body. The executor's HTTP call
+			// uses an independent context (execCtx), so it still receives the response.
+			// When ExecuteAndPollWithOptions checks ctx.Err() after Execute returns,
+			// the cancellation is guaranteed to be visible via the happens-before chain:
+			// cancel() → write body → (network) → read body → ctx.Err().
+			cancel()
 			resp := DQLQueryResponse{State: "RUNNING", RequestToken: "tok-after-execute"}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(resp)
-			// Signal that the execute response has been written; the test will now
-			// cancel the context before any poll request can be issued.
-			close(executeReturned)
 
 		case "/platform/storage/query/v1/query:cancel":
 			cancelCalled = true
@@ -2316,16 +2344,6 @@ func TestDQLExecutor_CancelAfterExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Cancel the context as soon as the execute response is delivered, so that
-	// the ctx.Err() check immediately after the POST fires before any poll.
-	go func() {
-		<-executeReturned
-		cancel()
-	}()
 
 	executor := NewDQLExecutor(c)
 	result, err := executor.ExecuteQueryWithContext(ctx, "fetch logs", DQLExecuteOptions{})
@@ -2460,6 +2478,69 @@ func TestDQLExecutor_OutputFormats_Integration(t *testing.T) {
 		}
 		if !strings.Contains(line, `"host":"web-01"`) || !strings.Contains(line, `"count":"194414758"`) {
 			t.Errorf("unexpected jsonl line: %q", line)
+		}
+	})
+
+	t.Run("typed casts the long to an unquoted number end-to-end", func(t *testing.T) {
+		out := captureStdout(t, func() {
+			if err := executor.ExecuteWithContext(context.Background(), "fetch logs",
+				DQLExecuteOptions{OutputFormat: "jsonl", Typed: true}); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+		})
+		line := strings.TrimSpace(string(out))
+		// With --typed the DQL long "count" must render as a bare JSON number, not
+		// the API's string encoding; the string column stays quoted.
+		if !strings.Contains(line, `"count":194414758`) {
+			t.Errorf("expected unquoted count with --typed, got: %q", line)
+		}
+		if strings.Contains(line, `"count":"194414758"`) {
+			t.Errorf("count is still string-encoded despite --typed: %q", line)
+		}
+		if !strings.Contains(line, `"host":"web-01"`) {
+			t.Errorf("string column should be unchanged: %q", line)
+		}
+	})
+
+	t.Run("EmitTypes surfaces a top-level types block in json", func(t *testing.T) {
+		out := captureStdout(t, func() {
+			if err := executor.ExecuteWithContext(context.Background(), "fetch logs",
+				DQLExecuteOptions{OutputFormat: "json", IncludeTypes: true, EmitTypes: true}); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+		})
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(out, &doc); err != nil {
+			t.Fatalf("output is not valid JSON: %v — %s", err, out)
+		}
+		if _, ok := doc["records"]; !ok {
+			t.Errorf("expected a records key alongside types, got: %s", out)
+		}
+		raw, ok := doc["types"]
+		if !ok {
+			t.Fatalf("expected a top-level types key with EmitTypes, got: %s", out)
+		}
+		// The block must preserve the raw API shape: [{indexRange, mappings}].
+		var groups []sdkquery.ColumnTypes
+		if err := json.Unmarshal(raw, &groups); err != nil {
+			t.Fatalf("types block is not the expected shape: %v — %s", err, raw)
+		}
+		if len(groups) != 1 || groups[0].Mappings["count"].Type != "long" {
+			t.Errorf("unexpected types block: %s", raw)
+		}
+	})
+
+	t.Run("types block is omitted without an explicit --include-types", func(t *testing.T) {
+		// --typed forces IncludeTypes on internally, but EmitTypes stays false, so
+		// the block must not leak into output.
+		out := captureStdout(t, func() {
+			if err := executor.ExecuteWithContext(context.Background(), "fetch logs",
+				DQLExecuteOptions{OutputFormat: "json", Typed: true}); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+		})
+		if bytes.Contains(out, []byte(`"types"`)) {
+			t.Errorf("types block leaked into output without --include-types: %s", out)
 		}
 	})
 }
@@ -2797,5 +2878,78 @@ func TestDQLExecutor_ClientContextHeader_OnInternalCancel(t *testing.T) {
 	}
 	if m["context"] != "incident-response" {
 		t.Errorf("context = %q, want %q", m["context"], "incident-response")
+	}
+}
+
+func TestWindowAdvice(t *testing.T) {
+	trap := `fetch logs | filter timestamp >= now() - 24h and timestamp < now() - 12h | summarize count()`
+	cases := []struct {
+		name    string
+		query   string
+		records []map[string]interface{}
+		opts    DQLExecuteOptions
+		want    bool
+	}{
+		{"trap query, no rows", trap, nil, DQLExecuteOptions{}, true},
+		{"trap query, single zero-count row", trap, []map[string]interface{}{{"count()": "0"}}, DQLExecuteOptions{}, true},
+		{"trap query, nonzero count row", trap, []map[string]interface{}{{"count()": "4136117"}}, DQLExecuteOptions{}, false},
+		{"trap query, many rows", trap, []map[string]interface{}{{"a": "1"}, {"a": "2"}}, DQLExecuteOptions{}, false},
+		{"explicit from: in query", `fetch logs, from:now()-24h | filter timestamp < now()-12h | summarize c = count()`, nil, DQLExecuteOptions{}, false},
+		{"timeframe flag set", trap, nil, DQLExecuteOptions{DefaultTimeframeStart: "2026-01-01T00:00:00Z"}, false},
+		// Since the t9 trap fix, an empty result WITHOUT a timestamp filter
+		// also fires (default-window wording) as long as no explicit window
+		// was set anywhere.
+		{"no timestamp filter", `fetch logs | summarize count()`, nil, DQLExecuteOptions{}, true},
+		{"filter on another field only", `fetch logs | filter loglevel == "ERROR"`, nil, DQLExecuteOptions{}, true},
+		{"no timestamp filter, explicit window", `fetch logs, from:now()-7d | summarize count()`, nil, DQLExecuteOptions{}, false},
+		{"no timestamp filter, nonempty result", `fetch logs | summarize count()`, []map[string]interface{}{{"count()": "42"}}, DQLExecuteOptions{}, false},
+		{"metric.series discovery, empty", `fetch metric.series | filter contains(metric.key, "oom")`, nil, DQLExecuteOptions{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := windowAdvice(tc.query, tc.records, tc.opts)
+			if (len(got) > 0) != tc.want {
+				t.Errorf("windowAdvice(%q, %v) = %v, want fired=%v", tc.query, tc.records, got, tc.want)
+			}
+		})
+	}
+	// The two empty-result shapes carry distinct wording: the timestamp-filter
+	// trap names the filter; the plain default-window one suggests widening;
+	// metric.series gets the discovery-specific line.
+	tsAdvice := windowAdvice(trap, nil, DQLExecuteOptions{})
+	if len(tsAdvice) == 0 || !strings.Contains(tsAdvice[0], "filter timestamp") {
+		t.Errorf("timestamp-trap advice = %v", tsAdvice)
+	}
+	defAdvice := windowAdvice(`fetch logs | summarize count()`, nil, DQLExecuteOptions{})
+	if len(defAdvice) == 0 || !strings.Contains(defAdvice[0], "DEFAULT query window") {
+		t.Errorf("default-window advice = %v", defAdvice)
+	}
+	msAdvice := windowAdvice(`fetch metric.series | filter contains(metric.key, "oom")`, nil, DQLExecuteOptions{})
+	if len(msAdvice) == 0 || !strings.Contains(msAdvice[0], "metric.series") {
+		t.Errorf("metric.series advice = %v", msAdvice)
+	}
+}
+
+// TestLookbackAdvice locks the note riding SUCCESSFUL dt.entity.* fetches
+// (evals: 17-host lookback census reported against 12 live hosts in five
+// consecutive control batches — via queries that returned rc 0, so the
+// error-side redirect never fired).
+func TestLookbackAdvice(t *testing.T) {
+	s := lookbackAdvice(`fetch dt.entity.host | summarize count()`)
+	if len(s) != 1 || !strings.Contains(s[0], `smartscapeNodes "HOST"`) || !strings.Contains(s[0], "LOOKBACK") {
+		t.Errorf("advice = %v", s)
+	}
+	s = lookbackAdvice(`fetch dt.entity.aws_lambda_function | limit 10`)
+	if len(s) != 1 || !strings.Contains(s[0], `smartscapeNodes "AWS_LAMBDA_FUNCTION"`) {
+		t.Errorf("advice = %v", s)
+	}
+	for _, q := range []string{
+		`fetch logs | summarize count()`,
+		`smartscapeNodes "HOST" | summarize count()`,
+		`fetch dt.davis.events`,
+	} {
+		if s := lookbackAdvice(q); len(s) != 0 {
+			t.Errorf("unexpected advice for %q: %v", q, s)
+		}
 	}
 }
