@@ -3,8 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -91,28 +89,9 @@ Examples:
 		queryFile, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")
 
-		var query string
-
-		if queryFile != "" {
-			// Read query from file (use "-" for stdin)
-			if queryFile == "-" {
-				content, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read query from stdin: %w", err)
-				}
-				query = string(content)
-			} else {
-				content, err := os.ReadFile(queryFile)
-				if err != nil {
-					return fmt.Errorf("failed to read query file: %w", err)
-				}
-				query = string(content)
-			}
-		} else if len(args) > 0 {
-			// Use inline query
-			query = args[0]
-		} else {
-			return fmt.Errorf("query string or --file is required")
+		query, err := resolveQueryInput(queryFile, args, osStdin())
+		if err != nil {
+			return err
 		}
 
 		// Apply template rendering if --set flags are provided
@@ -218,15 +197,16 @@ Examples:
 			}
 		}
 
-		// Set exit code based on result
+		// Exit code encodes the failure mode (documented contract: 1 timeout,
+		// 2 max attempts, 3 other); the result output was already printed.
 		if !result.Success {
 			switch result.FailureReason {
 			case "timeout":
-				os.Exit(1)
+				return &silentExitError{code: 1, reason: "wait: timeout"}
 			case "max attempts exceeded":
-				os.Exit(2)
+				return &silentExitError{code: 2, reason: "wait: max attempts exceeded"}
 			default:
-				os.Exit(3)
+				return &silentExitError{code: 3, reason: "wait: condition not met"}
 			}
 		}
 

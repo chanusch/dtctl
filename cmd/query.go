@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/resolver"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
+	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
 
 // isTerminal checks if the given file is a terminal
@@ -82,10 +82,11 @@ Examples:
   metrics | filter startsWith(metric.key, "dt") | limit 10
   EOF
 
-  # PowerShell: Use here-strings to avoid quote issues
-  dtctl query -f - -o json @'
+  # PowerShell: pipe a here-string in -- as an argument, Windows PowerShell 5.1
+  # strips the inner double quotes DQL needs (see docs/WINDOWS.md#quoting)
+  @'
   fetch logs, bucket:{"custom-logs"} | filter contains(host.name, "api")
-  '@
+  '@ | dtctl query -o json
 
   # Pipe query from file
   cat query.dql | dtctl query -o json
@@ -199,35 +200,9 @@ Examples:
 			args = []string{strings.Join(args, " ")}
 		}
 
-		var query string
-
-		if queryFile != "" {
-			// Read query from file (use "-" for stdin)
-			if queryFile == "-" {
-				content, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read query from stdin: %w", err)
-				}
-				query = string(content)
-			} else {
-				content, err := os.ReadFile(queryFile)
-				if err != nil {
-					return fmt.Errorf("failed to read query file: %w", err)
-				}
-				query = string(content)
-			}
-		} else if len(args) > 0 {
-			// Use inline query
-			query = args[0]
-		} else if !isTerminal(os.Stdin) {
-			// Read from piped stdin
-			content, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return fmt.Errorf("failed to read query from stdin: %w", err)
-			}
-			query = string(content)
-		} else {
-			return fmt.Errorf("query string or --file is required")
+		query, err := resolveQueryInput(queryFile, args, osStdin())
+		if err != nil {
+			return err
 		}
 
 		// Apply template rendering if --set flags are provided
@@ -575,7 +550,7 @@ func parseSegmentFlags(segmentIDs []string) ([]exec.FilterSegmentRef, error) {
 
 // parseSegmentsFile reads a YAML file containing an array of FilterSegmentRef entries.
 func parseSegmentsFile(path string) ([]exec.FilterSegmentRef, error) {
-	data, err := os.ReadFile(path)
+	data, err := vfs.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read segments file: %w", err)
 	}

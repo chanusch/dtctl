@@ -123,7 +123,7 @@ dtctl get workflows --watch
 dtctl get workflows --watch --interval 5s
 
 # Live query results
-dtctl query "fetch logs | filter status='ERROR'" --live
+dtctl query 'fetch logs | filter status == "ERROR"' --live
 
 # Only show changes (skip initial state)
 dtctl get workflows --watch --watch-only
@@ -142,6 +142,26 @@ dtctl get workflows --watch --watch-only
 - Simple commands for common tasks
 - Advanced options available via flags
 - Comprehensive help at every level
+
+### 10. Embeddable by Construction
+**The CLI is the API.** A service embeds the same command surface rather than a
+parallel one, so there is nothing to drift: `pkg/engine` takes a command line
+exactly as a user would type it and returns the bytes the CLI would have
+printed.
+
+- **No second surface** — anything typeable is callable, and output is
+  byte-identical (enforced by a CLI-vs-engine equality test, not by review)
+- **The invocation carries its world** — credentials, files, streams, and
+  environment arrive per request; nothing about the host process leaks into one,
+  and nothing about one request survives into the next
+- **Host abilities are opt-in** — subprocesses, editors, browsers, and the host
+  disk are granted explicitly by the CLI and withheld from embedded callers, so
+  they are structurally unreachable rather than merely discouraged
+- **Practical consequence for contributors** — user-supplied file paths go
+  through `pkg/vfs`, subprocess spawns go through a capability gateway, and
+  command bodies return errors instead of calling `os.Exit`
+
+See [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md).
 
 ## Command Structure
 
@@ -165,6 +185,8 @@ ctx         - Quick context management (list, switch, describe, set, delete)
 doctor      - Health check (config, context, token, connectivity, auth)
 diff        - Show differences between local and remote resources
 commands    - Machine-readable command catalog for AI agents (JSON/YAML, --brief, howto)
+serve       - Run dtctl as a server, one subcommand per protocol (serve http)
+              (experimental: registered only with DTCTL_EXPERIMENTAL_SERVE)
 
 # (not implemented yet)
 # patch       - Update specific fields of a resource
@@ -580,7 +602,7 @@ dtctl query -f query.dql --set host=h-123 --set timerange=2h
 # Wait for Query Results
 # Poll a query until a specific condition is met
 dtctl wait query "fetch spans | filter test_id == 'test-123'" --for=count=1 --timeout 5m
-dtctl wait query "fetch logs | filter status == 'ERROR'" --for=any --timeout 2m
+dtctl wait query 'fetch logs | filter status == "ERROR"' --for=any --timeout 2m
 dtctl wait query -f query.dql --set test_id=my-test --for=count-gte=1
 
 # Wait conditions:
@@ -923,7 +945,7 @@ dtctl exec copilot nl2dql -f prompt.txt          # Read prompt from file
 dtctl exec copilot nl2dql "..." -o json          # Output as JSON (includes messageToken)
 
 # DQL to NL
-dtctl exec copilot dql2nl "fetch logs | filter status='ERROR' | limit 10"
+dtctl exec copilot dql2nl 'fetch logs | filter status == "ERROR" | limit 10'
 dtctl exec copilot dql2nl -f query.dql           # Read query from file
 dtctl exec copilot dql2nl "..." -o json          # Output as JSON (includes summary + explanation)
 
@@ -1982,7 +2004,7 @@ dtctl logs wfe <execution-id> --task <name> # Specific task
 
 ```bash
 # Simple query
-dtctl query "fetch logs | filter status='ERROR' | limit 100"
+dtctl query 'fetch logs | filter status == "ERROR" | limit 100'
 
 # Query with output formatting
 dtctl query "fetch logs | summarize count(), by: {status}" -o json
@@ -2012,7 +2034,7 @@ dtctl wait query "fetch spans | filter test_id == 'integration-test-123'" \
   --timeout 5m
 
 # Wait for any error logs in the last 5 minutes
-dtctl wait query "fetch logs | filter status == 'ERROR' | filter timestamp > now() - 5m" \
+dtctl wait query 'fetch logs | filter status == "ERROR" | filter timestamp > now() - 5m' \
   --for=any \
   --timeout 2m
 
@@ -2288,5 +2310,6 @@ Exit code: 4
 - Resource diffing and change previews
 - Integration with CI/CD pipelines
 - ~~Plugin system for custom commands~~ — shipped 2026-07-12: kubectl-style exec plugins (`dtctl-<name>` on PATH; see [PLUGIN_CONVENTIONS.md](PLUGIN_CONVENTIONS.md))
+- ~~Run dtctl as a service~~ — shipped: `cmd.Run` + `pkg/engine` + `dtctl serve http` (see [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md))
 - Shell integration (kubectl-like autocompletion)
 - Resource usage analytics and cost estimation

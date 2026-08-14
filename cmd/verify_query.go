@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -53,10 +52,10 @@ Examples:
   cat query.dql | dtctl verify query
   echo 'fetch logs | limit 10' | dtctl verify query
 
-  # PowerShell: Use here-strings for complex queries
-  dtctl verify query -f - @'
+  # PowerShell: pipe a here-string in (an argument loses the inner quotes on 5.1)
+  @'
   fetch logs, bucket:{"custom-logs"} | filter contains(host.name, "api")
-  '@
+  '@ | dtctl verify query
 
   # Verify with template variables
   dtctl verify query -f query.dql --set host=h-123 --set timerange=1h
@@ -124,35 +123,9 @@ Examples:
 		queryFile, _ := cmd.Flags().GetString("file")
 		setFlags, _ := cmd.Flags().GetStringArray("set")
 
-		var query string
-
-		if queryFile != "" {
-			// Read query from file (use "-" for stdin)
-			if queryFile == "-" {
-				content, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read query from stdin: %w", err)
-				}
-				query = string(content)
-			} else {
-				content, err := os.ReadFile(queryFile)
-				if err != nil {
-					return fmt.Errorf("failed to read query file: %w", err)
-				}
-				query = string(content)
-			}
-		} else if len(args) > 0 {
-			// Use inline query
-			query = args[0]
-		} else if !isTerminal(os.Stdin) {
-			// Read from piped stdin
-			content, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return fmt.Errorf("failed to read query from stdin: %w", err)
-			}
-			query = string(content)
-		} else {
-			return fmt.Errorf("query string or --file is required")
+		query, err := resolveQueryInput(queryFile, args, osStdin())
+		if err != nil {
+			return err
 		}
 
 		// Apply template rendering if --set flags are provided
@@ -192,9 +165,10 @@ Examples:
 
 		// Handle errors (network, auth, API)
 		if err != nil {
-			// Exit with appropriate code
+			// Exit with the mapped code; nothing further is printed (the
+			// verify contract encodes the failure class in the exit code).
 			if exitCode != 0 {
-				os.Exit(exitCode)
+				return &silentExitError{code: exitCode, reason: err.Error()}
 			}
 			return err
 		}
@@ -226,9 +200,9 @@ Examples:
 			}
 		}
 
-		// Exit with appropriate code if non-zero
+		// Non-zero code without an error: the verdict was already printed.
 		if exitCode != 0 {
-			os.Exit(exitCode)
+			return &silentExitError{code: exitCode, reason: "query verification failed"}
 		}
 
 		return nil
