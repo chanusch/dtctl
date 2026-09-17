@@ -310,6 +310,8 @@ Failed to delete dashboard (HTTP 403): Forbidden
 
 Troubleshooting suggestions:
   • Insufficient permissions. Check that your API token has the required scopes
+  • Re-run the same command with --check-scopes to verify the scopes it requires
+  • Token scopes and IAM policy permissions are separate gates — if --check-scopes reports "ok", or "unknown" because the token is not introspectable, the tenant's IAM policy is what denies the request
   • View current context and safety level: 'dtctl config get-context'
   • If using a 'readonly' context, switch to a context with write permissions
   • Review required token scopes in the documentation
@@ -477,7 +479,9 @@ dtctl restore dashboard "My Dashboard" 5         # Restore by name to version 5
 dtctl restore notebook "My Notebook" 3 --force   # Skip confirmation
 
 # Notes:
-# - Snapshots are created when updating documents with create-snapshot option
+# - Snapshots are opt-in: pass --create-snapshot on update/apply/edit to capture
+#   the pre-update content (--snapshot-description labels it)
+# - At most 5 snapshots per document per minute are accepted
 # - Maximum 50 snapshots per document (oldest deleted when exceeded)
 # - Snapshots auto-delete after 30 days
 # - Only document owner can restore snapshots
