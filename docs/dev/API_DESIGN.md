@@ -179,6 +179,7 @@ query       - Execute a DQL query (with template support)
 exec        - Execute a workflow or function
 history     - Show version history (snapshots) of a document
 restore     - Restore a document to a previous version
+claim       - Claim access to a shared resource (claim environment-share)
 wait        - Wait for a specific condition (query results, resource state)
 alias       - Manage command aliases (set, list, delete, import, export)
 ctx         - Quick context management (list, switch, describe, set, delete)
@@ -186,7 +187,7 @@ doctor      - Health check (config, context, token, connectivity, auth)
 diff        - Show differences between local and remote resources
 commands    - Machine-readable command catalog for AI agents (JSON/YAML, --brief, howto)
 serve       - Run dtctl as a server, one subcommand per protocol (serve http)
-              (experimental: registered only with DTCTL_EXPERIMENTAL_SERVE)
+              (development-tier: registered only when opted in, see docs/STABILITY.md)
 
 # (not implemented yet)
 # patch       - Update specific fields of a resource
@@ -216,7 +217,6 @@ dtctl query "fetch logs | limit 10"
 --no-headers          # Omit headers in table output
 -v, --verbose         # Verbose output (-v for details, -vv for full HTTP debug)
 --debug               # Enable debug mode (full HTTP logging, equivalent to -vv)
---dry-run             # Print what would be done without doing it
 --field-selector string # Filter by fields (e.g., owner=me,type=notebook)
 -A, --agent           # Agent output mode: wrap all output in a structured JSON envelope
 --no-agent            # Disable auto-detected agent mode
@@ -256,7 +256,7 @@ When `--agent` (or `-A`) is passed, all CLI output is wrapped in a structured JS
 **Envelope fields:**
 - `ok` (bool) — `true` for success, `false` for errors. Always present.
 - `result` — The command output data. Always present (may be `null`).
-- `error` (object, optional) — Structured error with `code`, `message`, `operation`, `status_code`, `request_id`, `suggestions`.
+- `error` (object, optional) — Structured error with `code`, `message`, `operation`, `status_code`, `request_id`, `suggestions`; DQL errors add `position` and `snippet` (see [AGENT_MODE.md](../AGENT_MODE.md#error-responses)).
 - `context` (object, optional) — Operational metadata: `total`, `has_more`, `verb`, `resource`, `suggestions`, `warnings`, `duration`, `links`.
 
 **Auto-detection:** Agent mode is automatically enabled when dtctl detects it is running inside an AI agent environment (via the `aidetect` package). Use `--no-agent` to opt out. Auto-detection is skipped if an explicit `--output` format is set.
@@ -328,23 +328,11 @@ Use `--debug` to see full HTTP details when troubleshooting.
 
 ### AI Agent Detection
 
-dtctl automatically detects when running under AI coding assistants and includes this in the User-Agent header for telemetry:
-
-- **Claude Code**: Detected via `CLAUDECODE` environment variable
-- **OpenCode**: Detected via `OPENCODE` environment variable
-- **GitHub Copilot**: Detected via `GITHUB_COPILOT` environment variable
-- **Cursor**: Detected via `CURSOR_AGENT` environment variable
-- **Kiro**: Detected via `KIRO` environment variable
-- **Junie**: Detected via `JUNIE` environment variable
-- **OpenClaw**: Detected via `OPENCLAW` environment variable
-- **OpenAI Codex CLI**: Detected via `CODEX` environment variable
-- **Codeium**: Detected via `CODEIUM_AGENT` environment variable
-- **TabNine**: Detected via `TABNINE_AGENT` environment variable
-- **Amazon Q**: Detected via `AMAZON_Q` environment variable
+dtctl automatically detects when running under AI coding assistants. Detection enables [agent mode](../AGENT_MODE.md#auto-detection) (opt out with `--no-agent`) and names the agent in the User-Agent header for telemetry. The environment variables, and the order they are checked in, are listed in [AGENT_MODE.md](../AGENT_MODE.md#auto-detection); the implementation is `sdk/agentmode/detect.go`.
 
 Example User-Agent: `dtctl/0.12.0 (AI-Agent: opencode)`
 
-This telemetry helps improve the CLI experience for AI-assisted workflows. Detection is automatic and doesn't affect functionality.
+This telemetry helps improve the CLI experience for AI-assisted workflows.
 
 ### Skills Management
 
@@ -423,6 +411,7 @@ dtctl share dashboard <id> --user <id> --access read-write  # Read-write access
 dtctl share dashboard <id> --group <group-sso-id> # Share with group
 dtctl unshare dashboard <id> --user <user-sso-id> # Remove user access
 dtctl unshare dashboard <id> --all               # Remove all shares
+dtctl claim environment-share <share-id|share-url> # Claim a #share= link; prints the document ID
 
 # (not implemented yet)
 # dtctl lock dashboard <id>                        # Acquire active lock

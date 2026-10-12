@@ -4,13 +4,20 @@ package awsmonitoringconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
+
+// ErrNotFound reports that no monitoring configuration matches the name. It
+// separates "absent" from "the lookup itself failed", which apply needs to
+// decide between create and abort.
+var ErrNotFound = errors.New("monitoring config not found")
 
 const (
 	ExtensionName      = "com.dynatrace.extension.da-aws"
@@ -88,24 +95,32 @@ type Value struct {
 	ActivationContext string    `json:"activationContext,omitempty"`
 	Aws               AWSConfig `json:"aws"`
 	FeatureSets       []string  `json:"featureSets"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type AWSConfig struct {
-	DeploymentRegion            string                    `json:"deploymentRegion,omitempty"`
-	Credentials                 []Credential              `json:"credentials"`
-	RegionFiltering             []string                  `json:"regionFiltering"`
-	TagFiltering                []TagFilter               `json:"tagFiltering"`
-	TagEnrichment               []string                  `json:"tagEnrichment"`
-	DtLabelsEnrichment          map[string]DtLabelMapping `json:"dtLabelsEnrichment,omitempty"`
-	SmartscapeConfiguration     FlagConfig                `json:"smartscapeConfiguration"`
-	MetricsConfiguration        RegionalFlagConfig        `json:"metricsConfiguration"`
-	CloudWatchLogsConfiguration RegionalFlagConfig        `json:"cloudWatchLogsConfiguration"`
-	Namespaces                  []CustomNamespace         `json:"namespaces"`
-	ConfigurationMode           string                    `json:"configurationMode,omitempty"`
-	DeploymentMode              string                    `json:"deploymentMode,omitempty"`
-	DeploymentScope             string                    `json:"deploymentScope,omitempty"`
-	ManualDeploymentStatus      string                    `json:"manualDeploymentStatus,omitempty"`
-	AutomatedDeploymentStatus   string                    `json:"automatedDeploymentStatus,omitempty"`
+	UseIngestEnrichmentConfig          *bool                     `json:"useIngestEnrichmentConfig,omitempty" yaml:"useIngestEnrichmentConfig,omitempty"`
+	IngestEnrichmentMigrationProcessed *bool                     `json:"ingestEnrichmentMigrationProcessed,omitempty" yaml:"ingestEnrichmentMigrationProcessed,omitempty"`
+	DeploymentRegion                   string                    `json:"deploymentRegion,omitempty"`
+	Credentials                        []Credential              `json:"credentials"`
+	RegionFiltering                    []string                  `json:"regionFiltering"`
+	TagFiltering                       []TagFilter               `json:"tagFiltering"`
+	TagEnrichment                      []string                  `json:"tagEnrichment"`
+	DtLabelsEnrichment                 map[string]DtLabelMapping `json:"dtLabelsEnrichment,omitempty"`
+	SmartscapeConfiguration            FlagConfig                `json:"smartscapeConfiguration"`
+	MetricsConfiguration               RegionalFlagConfig        `json:"metricsConfiguration"`
+	CloudWatchLogsConfiguration        RegionalFlagConfig        `json:"cloudWatchLogsConfiguration"`
+	Namespaces                         []CustomNamespace         `json:"namespaces"`
+	ConfigurationMode                  string                    `json:"configurationMode,omitempty"`
+	DeploymentMode                     string                    `json:"deploymentMode,omitempty"`
+	DeploymentScope                    string                    `json:"deploymentScope,omitempty"`
+	ManualDeploymentStatus             string                    `json:"manualDeploymentStatus,omitempty"`
+	AutomatedDeploymentStatus          string                    `json:"automatedDeploymentStatus,omitempty"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type Credential struct {
@@ -113,21 +128,33 @@ type Credential struct {
 	Enabled      bool   `json:"enabled"`
 	ConnectionID string `json:"connectionId"`
 	AccountID    string `json:"accountId,omitempty"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type FlagConfig struct {
 	Enabled bool `json:"enabled"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type RegionalFlagConfig struct {
 	Enabled bool     `json:"enabled"`
 	Regions []string `json:"regions"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type TagFilter struct {
 	Key       string `json:"key"`
 	Value     string `json:"value"`
 	Condition string `json:"condition"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 // DtLabelMapping maps a Dynatrace label to either a literal value or an AWS
@@ -135,6 +162,9 @@ type TagFilter struct {
 type DtLabelMapping struct {
 	Literal string `json:"literal,omitempty"`
 	TagKey  string `json:"tagKey,omitempty"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 // CustomNamespace defines a custom CloudWatch namespace with ad-hoc metrics
@@ -143,6 +173,9 @@ type CustomNamespace struct {
 	Namespace            string         `json:"namespace"`
 	AutoDiscoveryEnabled bool           `json:"autoDiscoveryEnabled"`
 	Metrics              []CustomMetric `json:"metrics"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 // CustomMetric defines a single CloudWatch metric within a CustomNamespace.
@@ -152,6 +185,9 @@ type CustomMetric struct {
 	Dimensions   []string `json:"dimensions"`
 	Aggregations []string `json:"aggregations"`
 	Type         string   `json:"type,omitempty"` // e.g. "CUSTOM_AWS", "CUSTOM"
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type ListResponse struct {
@@ -285,7 +321,7 @@ func (h *Handler) fetchLatestSchema() (*ExtensionSchemaResponse, error) {
 		return nil, fmt.Errorf("failed to determine latest extension version: %w", err)
 	}
 	var schema ExtensionSchemaResponse
-	endpoint := fmt.Sprintf(ExtensionSchemaAPI, latest)
+	endpoint := fmt.Sprintf(ExtensionSchemaAPI, httpclient.PathSegment(latest))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -306,7 +342,7 @@ func (h *Handler) GetRaw(id string) ([]byte, error) {
 
 func (h *Handler) Get(id string) (*AWSMonitoringConfig, error) {
 	var result AWSMonitoringConfig
-	resp, err := h.client.HTTP().R().SetResult(&result).Get(fmt.Sprintf("%s/%s", BaseAPI, id))
+	resp, err := h.client.HTTP().R().SetResult(&result).Get(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +403,7 @@ func (h *Handler) FindByName(name string) (*AWSMonitoringConfig, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("AWS monitoring config with description %q not found", name)
+	return nil, fmt.Errorf("AWS monitoring config with description %q: %w", name, ErrNotFound)
 }
 
 func (h *Handler) Create(data []byte) (*AWSMonitoringConfig, error) {
@@ -392,7 +428,7 @@ func (h *Handler) Update(id string, data []byte) (*AWSMonitoringConfig, error) {
 		SetHeader("Content-Type", "application/json").
 		SetBody(data).
 		SetResult(&result).
-		Put(fmt.Sprintf("%s/%s", BaseAPI, id))
+		Put(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to update aws_monitoring_config: %w", err)
 	}
@@ -403,7 +439,7 @@ func (h *Handler) Update(id string, data []byte) (*AWSMonitoringConfig, error) {
 }
 
 func (h *Handler) Delete(id string) error {
-	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", BaseAPI, id))
+	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return err
 	}

@@ -83,6 +83,7 @@ document:trash.documents:restore,
 automation:workflows:read,
 automation:workflows:write,
 automation:workflows:run,
+document:environment-shares:claim,
 dev-obs:breakpoints:set,
 slo:slos:read,
 slo:slos:write,
@@ -131,6 +132,7 @@ Full resource management for team environments (no data deletion; document delet
 document:documents:read,
 document:documents:write,
 document:documents:delete,
+document:documents:admin,
 document:direct-shares:read,
 document:direct-shares:write,
 document:direct-shares:delete,
@@ -293,181 +295,38 @@ email:emails:send
 
 ---
 
-## Quick Reference by Resource Type
+## Scopes by resource
 
-### Workflows
+Required scopes for every resource are generated from the CLI below (grouped by access level), and each resource page under [`resources/`](resources/) lists its own **Required token scopes** table.
 
-| Scope                        | Description                      |
-| ---------------------------- | -------------------------------- |
-| `automation:workflows:read`  | Read workflow definitions        |
-| `automation:workflows:write` | Create, update, delete workflows |
-| `automation:workflows:run`   | Execute workflows                |
+### Flags that need an extra scope
 
-### Documents (Dashboards & Notebooks)
+A few flags reach a second API, so they need a scope the resource itself does not. `dtctl --check-scopes` accounts for them, reporting the requirement of the command line you actually typed:
 
-| Scope                                | Description                       |
-| ------------------------------------ | --------------------------------- |
-| `document:documents:read`            | Read dashboards and notebooks     |
-| `document:documents:write`           | Create, update documents          |
-| `document:documents:delete`          | Delete documents (moves to trash) |
-| `document:documents:admin`           | Admin access for ownership        |
-| `document:direct-shares:read`        | Read direct shares                |
-| `document:direct-shares:write`       | Create/manage direct shares       |
-| `document:direct-shares:delete`      | Delete direct shares              |
-| `document:environment-shares:read`   | Read environment shares           |
-| `document:environment-shares:write`  | Create environment shares         |
-| `document:environment-shares:claim`  | Claim environment shares          |
-| `document:environment-shares:delete` | Delete environment shares         |
-| `document:trash.documents:read`      | Read trashed documents            |
-| `document:trash.documents:restore`   | Restore from trash                |
-| `document:trash.documents:delete`    | Permanently delete from trash     |
+| Command | Flag | Extra scope |
+| --- | --- | --- |
+| `dtctl get documents` / `dashboards` / `notebooks` | `--admin-access` | `document:documents:admin` |
+| `dtctl update extension` / `extensions` | `--with-configurations` | `extensions:configurations:read`, `extensions:configurations:write` |
 
-### DQL Queries & Grail Data
+Without the extra scope the flag fails with `403 Insufficient permissions`, while the same command without it succeeds — which is why the scope is not declared on the resource.
 
-| Scope                                | Description                |
-| ------------------------------------ | -------------------------- |
-| `storage:logs:read`                  | Read logs                  |
-| `storage:logs:write`                 | Write logs                 |
-| `storage:events:read`                | Read events                |
-| `storage:events:write`               | Write events               |
-| `storage:metrics:read`               | Read metrics               |
-| `storage:metrics:write`              | Write metrics              |
-| `storage:spans:read`                 | Read spans                 |
-| `storage:bizevents:read`             | Read business events       |
-| `storage:entities:read`              | Read entities              |
-| `storage:smartscape:read`            | Read topology              |
-| `storage:system:read`                | Read system tables         |
-| `storage:security.events:read`       | Read security events       |
-| `storage:application.snapshots:read` | Read app snapshots         |
-| `storage:user.events:read`           | Read user events           |
-| `storage:user.sessions:read`         | Read user sessions         |
-| `storage:user.replays:read`          | Read session replays       |
-| `storage:fieldsets:read`             | Read fieldsets             |
-| `storage:fieldset-definitions:read`  | Read fieldset schemas      |
-| `storage:fieldset-definitions:write` | Write fieldset schemas     |
-| `storage:files:read`                 | Read files/lookup tables   |
-| `storage:files:write`                | Write files/lookup tables  |
-| `storage:files:delete`               | Delete files/lookup tables |
-| `storage:filter-segments:read`       | Read filter segments       |
-| `storage:filter-segments:write`      | Write filter segments      |
-| `storage:filter-segments:share`      | Share filter segments      |
-| `storage:filter-segments:delete`     | Delete own filter segments |
-| `storage:filter-segments:admin`      | Admin all filter segments  |
-| `storage:records:delete`             | Delete records in Grail    |
+`dtctl auth login` requests `document:documents:admin` at the `readwrite-all` and `dangerously-unrestricted` safety levels (not at `readonly` or `readwrite-mine`, which exist to keep other users' documents out of reach). The scope alone is not enough: the tenant's IAM policy must also grant the `document:documents:admin` permission — a user without it can still log in, the API just keeps refusing `--admin-access`. OAuth sessions created before dtctl requested the scope do not carry it; run `dtctl auth login` again to pick it up.
 
-### Bucket Management
+### Endpoints that accept one of several scopes
 
-| Scope                                 | Description                      |
-| ------------------------------------- | -------------------------------- |
-| `storage:buckets:read`                | Read from buckets                |
-| `storage:buckets:write`               | Write to buckets                 |
-| `storage:bucket-definitions:read`     | Read bucket definitions          |
-| `storage:bucket-definitions:write`    | Create/update bucket definitions |
-| `storage:bucket-definitions:delete`   | Delete bucket definitions        |
-| `storage:bucket-definitions:truncate` | Truncate bucket data             |
-
-### SLOs
-
-| Scope                          | Description                           |
-| ------------------------------ | ------------------------------------- |
-| `slo:slos:read`                | Read SLOs                             |
-| `slo:slos:write`               | Create, update, delete, evaluate SLOs |
-| `slo:objective-templates:read` | Read SLO templates                    |
-
-### Settings API
-
-| Scope                    | Description                     |
-| ------------------------ | ------------------------------- |
-| `settings:schemas:read`  | Read settings schemas           |
-| `settings:objects:read`  | Read settings objects           |
-| `settings:objects:write` | Create, update, delete settings |
-| `settings:objects:admin` | Admin access for ownership      |
-
-### App Settings API
-
-| Scope                        | Description              |
-| ---------------------------- | ------------------------ |
-| `app-settings:objects:read`  | Read app settings objects |
-
-### Extensions API
-
-| Scope                             | Description                                      |
-| --------------------------------- | ------------------------------------------------ |
-| `extensions:definitions:read`     | Read extension definitions                       |
-| `extensions:definitions:write`    | Upload custom extensions, install Hub extensions |
-| `extensions:configurations:read`  | Read monitoring configurations                   |
-| `extensions:configurations:write` | Create, update, delete monitoring configurations |
-
-### Hub Catalog API
-
-| Scope                         | Description                                            |
-| ----------------------------- | ------------------------------------------------------ |
-| `extensions:definitions:read` | Browse Hub catalog extensions and releases (read-only) |
-
-### OpenPipeline
-
-| Scope                              | Description                                              |
-| ---------------------------------- | ------------------------------------------------------- |
-| `openpipeline:configurations:read` | Translate a Classic pipeline into an OpenPipeline config |
-
-### Davis AI
-
-| Scope                                   | Description             |
-| --------------------------------------- | ----------------------- |
-| `davis:analyzers:read`                  | View analyzers          |
-| `davis:analyzers:execute`               | Execute analyzers       |
-| `davis-copilot:conversations:execute`   | CoPilot chat            |
-| `davis-copilot:nl2dql:execute`          | Natural language to DQL |
-| `davis-copilot:dql2nl:execute`          | DQL to natural language |
-| `davis-copilot:document-search:execute` | Document search         |
-
-### App Engine
-
-| Scope                             | Description                  |
-| --------------------------------- | ---------------------------- |
-| `app-engine:apps:install`         | Install/update apps          |
-| `app-engine:apps:run`             | List/run apps, user metadata |
-| `app-engine:apps:delete`          | Uninstall apps               |
-| `app-engine:functions:run`        | Execute functions            |
-| `app-engine:edge-connects:read`   | Read EdgeConnect             |
-| `app-engine:edge-connects:write`  | Create/update EdgeConnect    |
-| `app-engine:edge-connects:delete` | Delete EdgeConnect           |
-
-### Notifications
-
-| Scope                              | Description                               |
-| ---------------------------------- | ----------------------------------------- |
-| `notification:notifications:read`  | Read notification configurations          |
-| `notification:notifications:write` | Create/update notification configurations |
-
-### Live Debugger
-| Scope | Description |
-|-------|-------------|
-| `dev-obs:breakpoints:set` | Create, update, and delete Live Debugger breakpoints |
-
-`dev-obs:breakpoints:set` is not included in the `readonly` safety level.
-
-### IAM
-
-> **Note**: The `iam:users:read` and `iam:groups:read` scopes are defined in the IAM API spec but may not be available in all token management UIs (e.g., the platform token page). If unavailable, user and group listing features will not work with that token type.
-
-| Scope               | Description   |
-| ------------------- | ------------- |
-| `iam:users:read`    | Read users    |
-| `iam:groups:read`   | Read groups   |
-| `iam:policies:read` | Read policies |
-
-### Other
-
-| Scope               | Description              |
-| ------------------- | ------------------------ |
-| `email:emails:send` | Send notification emails |
+Some endpoints accept any one of several scopes. The Platform Management API behind `dtctl get environment`, `get license` and `get license-settings` (and their `describe` forms) accepts `app-engine:apps:run`, `app-engine:functions:run` or `platform-management:environments:read`. dtctl lists and requests `app-engine:apps:run`, and the table below shows the others as "or instead any one of". `dtctl --check-scopes` reports `ok` for a token that holds any one of them, and names the one it relied on in `satisfied_by`.
 
 <!-- GENERATED:token-scopes:start -->
 <!-- Do not edit by hand. Generated by scripts/gen-docs from `dtctl commands --full -o json`; run `make docs-generate`. -->
 
 ## Required scopes by resource (generated)
 Generated reference of the API token scopes each resource requires, grouped by safety level.
+
+### claim
+
+| Resource | Scope |
+| --- | --- |
+| environment-share | `document:environment-shares:claim` |
 
 ### delete
 
@@ -480,6 +339,8 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | edgeconnect | `app-engine:edge-connects:delete` |
 | lookup | `storage:files:delete` |
 | notebook | `document:documents:delete` |
+| scheduling-rule | `automation:rules:read` |
+| scheduling-rule | `automation:rules:write` |
 | segment | `storage:filter-segments:delete` |
 | trash | `document:trash.documents:delete` |
 
@@ -490,6 +351,15 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | analyzer | `davis:analyzers:read` |
 | anomaly-detector | `settings:objects:read` |
 | app | `app-engine:apps:run` |
+| arrivals | `storage:bizevents:read` |
+| arrivals | `storage:entities:read` |
+| arrivals | `storage:events:read` |
+| arrivals | `storage:logs:read` |
+| arrivals | `storage:metrics:read` |
+| arrivals | `storage:security.events:read` |
+| arrivals | `storage:smartscape:read` |
+| arrivals | `storage:spans:read` |
+| arrivals | `storage:system:read` |
 | aws | `extensions:configurations:read` |
 | aws | `settings:objects:read` |
 | azure | `extensions:configurations:read` |
@@ -501,6 +371,8 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | dashboard | `document:documents:read` |
 | document | `document:documents:read` |
 | edgeconnect | `app-engine:edge-connects:read` |
+| environment | `app-engine:apps:run` |
+| environment | or instead any one of: `app-engine:functions:run`; `platform-management:environments:read` |
 | extension | `extensions:definitions:read` |
 | extension-config | `extensions:configurations:read` |
 | function | `app-engine:apps:run` |
@@ -510,6 +382,10 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | hub-extension | `hub:catalog:read` |
 | hub-extension-release | `hub:catalog:read` |
 | intent | `app-engine:apps:run` |
+| license | `app-engine:apps:run` |
+| license | or instead any one of: `app-engine:functions:run`; `platform-management:environments:read` |
+| license-settings | `app-engine:apps:run` |
+| license-settings | or instead any one of: `app-engine:functions:run`; `platform-management:environments:read` |
 | lookup | `storage:files:read` |
 | lql-to-dql | `openpipeline:configurations:read` |
 | notebook | `document:documents:read` |
@@ -517,6 +393,7 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | openpipeline-dql-processor | `openpipeline:configurations:read` |
 | openpipeline-matcher | `openpipeline:configurations:read` |
 | preview-processor | `openpipeline:configurations:read` |
+| scheduling-rule | `automation:rules:read` |
 | sdk-version | `app-engine:apps:run` |
 | segment | `storage:filter-segments:read` |
 | setting | `app-settings:objects:read` |
@@ -563,6 +440,7 @@ Generated reference of the API token scopes each resource requires, grouped by s
 | lookup | `storage:files:write` |
 | notebook | `document:documents:write` |
 | notification | `notification:notifications:write` |
+| scheduling-rule | `automation:rules:write` |
 | segment | `storage:filter-segments:write` |
 | setting | `settings:objects:write` |
 | slo | `slo:slos:write` |

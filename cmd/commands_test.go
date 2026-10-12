@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -52,7 +53,7 @@ func TestCommandsCmd_DefaultIsMinimalTOON(t *testing.T) {
 	require.Contains(t, out, "tool: dtctl")
 	require.Contains(t, out, "command_model: verb-noun")
 	require.Contains(t, out, "verbs:")
-	require.NotContains(t, out, "{")
+	require.False(t, strings.HasPrefix(strings.TrimSpace(out), "{"), "JSON output")
 
 	// Minimal: no per-verb detail fields.
 	require.NotContains(t, out, "mutating")
@@ -86,7 +87,7 @@ func TestCommandsCmd_FullMatchesLegacyOutput(t *testing.T) {
 	// Byte-for-byte identical to building the full listing directly, annotated
 	// with the same active profile/safety context the command applies.
 	wantListing := commands.Build(rootCmd)
-	annotateListingContext(wantListing)
+	annotateListingContext(context.Background(), wantListing)
 	var want bytes.Buffer
 	require.NoError(t, commands.WriteTo(&want, wantListing, "json"))
 	require.Equal(t, want.String(), out)
@@ -98,8 +99,7 @@ func TestCommandsCmd_FullMatchesLegacyOutput(t *testing.T) {
 func resetCommandsFlags(t *testing.T) {
 	t.Helper()
 
-	briefMode, fullMode, requiredScopesMode = false, false, false
-	outputFormat = "table"
+	gFlags.outputFormat = "table"
 
 	outFlag := rootCmd.PersistentFlags().Lookup("output")
 	require.NoError(t, outFlag.Value.Set("table"))
@@ -326,7 +326,7 @@ func TestCommandsCmd_GlobalFlags(t *testing.T) {
 	require.NotNil(t, listing.GlobalFlags)
 	require.Contains(t, listing.GlobalFlags, "--output")
 	require.Contains(t, listing.GlobalFlags, "--agent")
-	require.Contains(t, listing.GlobalFlags, "--dry-run")
+	require.NotContains(t, listing.GlobalFlags, "--dry-run")
 	require.Contains(t, listing.GlobalFlags, "--context")
 	require.Contains(t, listing.GlobalFlags, "--plain")
 	require.Contains(t, listing.GlobalFlags, "--chunk-size")
@@ -424,7 +424,8 @@ func TestMutatingVerbsMatchSafetyCheckerUsage(t *testing.T) {
 		// Detect both safety-check patterns:
 		//   - NewSafetyChecker(...): direct construction
 		//   - SetupWithSafety(...): root.go helper that builds a checker internally
-		if !strings.Contains(content, "NewSafetyChecker") && !strings.Contains(content, "SetupWithSafety(") {
+		if !strings.Contains(content, "NewSafetyChecker") && !strings.Contains(content, "SetupWithSafety(") &&
+			!strings.Contains(content, "setupWithSafety(") {
 			continue
 		}
 
@@ -487,9 +488,14 @@ func TestMutatingVerbFilesPerformSafetyChecks(t *testing.T) {
 	// alongside a gated sibling in the same file.
 	clientCtors := []string{
 		"SetupClient()", "Setup()", "SetupWithSafety", "NewClientFromConfig(",
+		// the context-taking twins the commands call from inside an invocation
+		"setupClient(", "setup(", "setupWithSafety", "newClientFromConfig(",
 	}
 	// SetupWithSafetyAndPrinter contains SetupWithSafety, so both are covered.
-	safetyCalls := []string{"NewSafetyChecker", "SetupWithSafety"}
+	// CheckSafety is the direct form: it is where the --dry-run exemption
+	// lives, so a command gates through it rather than through a checker of
+	// its own (TestSafetyChecksGoThroughCheckSafety).
+	safetyCalls := []string{"NewSafetyChecker", "SetupWithSafety", "CheckSafety(", "setupWithSafety", "checkSafety("}
 
 	containsAny := func(s string, needles []string) bool {
 		for _, n := range needles {
@@ -525,7 +531,7 @@ func TestMutatingVerbFilesPerformSafetyChecks(t *testing.T) {
 		checked++
 		require.True(t, containsAny(content, safetyCalls),
 			"%s belongs to the mutating verb %q and builds a platform client, but performs no "+
-				"safety check (NewSafetyChecker or SetupWithSafety). Every command under a "+
+				"safety check (CheckSafety, SetupWithSafety or NewSafetyChecker). Every command under a "+
 				"mutating verb must gate on the safety level — see AGENTS.md 'CRITICAL: Safety Checks'.",
 			name, verb)
 	}
@@ -737,6 +743,11 @@ func TestCommandsCmd_ListingCoversAllNonHiddenCommands(t *testing.T) {
 		name := cmd.Name()
 		// Skip utility commands that are intentionally excluded
 		if name == "help" || name == "completion" || name == "version" || name == "commands" {
+			continue
+		}
+		// Help topics (e.g. token-scopes) have nothing to run.
+		if !cmd.Runnable() && !cmd.HasSubCommands() {
+			require.NotContains(t, listing.Verbs, name, "help topic %q must not be in the listing", name)
 			continue
 		}
 		require.Contains(t, listing.Verbs, name,

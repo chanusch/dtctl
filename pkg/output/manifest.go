@@ -65,9 +65,22 @@ type SampleStats struct {
 // Query metadata rides on the envelope's top-level `metadata` key (Response.Metadata),
 // not inside the result payload, so it is placed identically for inline and
 // spilled results.
+//
+// When the result was compacted (--compact, the agent-mode default), Constant
+// carries the columns that hold the same value in every row and Records omits
+// them along with every null value; a row is `constant ∪ record`, an absent key
+// meaning null (see CompactRecords). Constant precedes Records so a reader sees
+// it first, and it is omitted when nothing was hoisted.
+//
+// Types is the DQL per-column type block (indexRange + mappings), set only when
+// the caller explicitly asked for it (--include-types) and the API returned it.
+// It describes the full result, so it is the same whether the rows were
+// compacted, clipped or cut by an output budget.
 type InlineRecords struct {
-	Kind    string                   `json:"kind"`
-	Records []map[string]interface{} `json:"records"`
+	Kind     string                   `json:"kind"`
+	Constant map[string]interface{}   `json:"constant,omitempty"`
+	Records  []map[string]interface{} `json:"records"`
+	Types    interface{}              `json:"types,omitempty"`
 }
 
 // InlineRecordsEncoded is the KindRecords payload when the agent asked for a
@@ -78,10 +91,14 @@ type InlineRecords struct {
 // the same way either side of the spill threshold: below it the rows come back
 // encoded under this shape, above it as a `result-file` manifest — never as a
 // bare TOON document with no `ok`/`context`.
+// Constant is the compaction's hoisted columns, as on InlineRecords; it stays
+// native JSON rather than joining the encoded string, and so does Types.
 type InlineRecordsEncoded struct {
-	Kind     string `json:"kind"`
-	Encoding string `json:"encoding"`
-	Records  string `json:"records"`
+	Kind     string                 `json:"kind"`
+	Encoding string                 `json:"encoding"`
+	Constant map[string]interface{} `json:"constant,omitempty"`
+	Records  string                 `json:"records"`
+	Types    interface{}            `json:"types,omitempty"`
 }
 
 // SpecFileManifest is the result payload for the KindDocumentFile envelope: a
@@ -120,6 +137,14 @@ type ResultFileManifest struct {
 	Sampled       bool    `json:"sampled,omitempty"`
 	SamplingRatio float64 `json:"sampling_ratio,omitempty"`
 
+	// Constant and NullColumns are set when the result was compacted
+	// (--compact, the agent-mode default): the columns holding one value in
+	// every row are collapsed into Constant, the all-null ones are listed by
+	// name, and neither appears again in Columns / SampleStats or SampleRows.
+	// The on-disk sidecar keeps the full per-column profile.
+	Constant    map[string]interface{} `json:"constant,omitempty"`
+	NullColumns []string               `json:"null_columns,omitempty"`
+
 	// Exactly one of Columns / SampleStats is populated: Columns when the
 	// result was not sampled, SampleStats (with per-column basis) when it was.
 	Columns     []ColumnStats `json:"columns,omitempty"`
@@ -133,6 +158,10 @@ type ResultFileManifest struct {
 	ColumnsOmitted []string `json:"columns_omitted,omitempty"`
 
 	SampleRows []map[string]interface{} `json:"sample_rows,omitempty"`
+
+	// Types is the DQL per-column type block, as on InlineRecords: set only for
+	// an explicit --include-types, and describing the full spilled result.
+	Types interface{} `json:"types,omitempty"`
 }
 
 // SetStats places the computed column stats in the correct location depending on

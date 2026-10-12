@@ -302,6 +302,103 @@ func TestListDirectShares_Paginated(t *testing.T) {
 	}
 }
 
+func TestGetEnvironmentShare(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/environment-shares/share-1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"share-1","documentId":"doc-123","access":["read"],"claimCount":2}`))
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	result, err := h.GetEnvironmentShare(context.Background(), "share-1")
+	if err != nil {
+		t.Fatalf("GetEnvironmentShare() error: %v", err)
+	}
+	if result.DocumentID != "doc-123" {
+		t.Errorf("DocumentID = %q, want doc-123", result.DocumentID)
+	}
+	if result.ClaimCount != 2 {
+		t.Errorf("ClaimCount = %d, want 2", result.ClaimCount)
+	}
+}
+
+func TestGetEnvironmentShare_NotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/environment-shares/missing", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"error":{"code":404,"message":"not found"}}`)
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	_, err := h.GetEnvironmentShare(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("GetEnvironmentShare() expected error for 404")
+	}
+	if !errors.Is(err, httpclient.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestClaimEnvironmentShare(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/environment-shares/share-1/claim", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"documentId":"doc-123","documentType":"dashboard","access":["read","write"]}`))
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	result, err := h.ClaimEnvironmentShare(context.Background(), "share-1")
+	if err != nil {
+		t.Fatalf("ClaimEnvironmentShare() error: %v", err)
+	}
+	if result.DocumentID != "doc-123" || result.DocumentType != "dashboard" {
+		t.Errorf("got %+v, want doc-123/dashboard", result)
+	}
+	if len(result.Access) != 2 {
+		t.Errorf("Access = %v, want read+write", result.Access)
+	}
+}
+
+func TestClaimEnvironmentShare_EscapesShareID(t *testing.T) {
+	var gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"documentId":"d","documentType":"notebook","access":["read"]}`))
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	if _, err := h.ClaimEnvironmentShare(context.Background(), "a/b?c"); err != nil {
+		t.Fatalf("ClaimEnvironmentShare() error: %v", err)
+	}
+	if want := "/platform/document/v1/environment-shares/a%2Fb%3Fc/claim"; gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+}
+
+func TestClaimEnvironmentShare_NotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/environment-shares/missing/claim", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"not found"}}`))
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	_, err := h.ClaimEnvironmentShare(context.Background(), "missing")
+	if !errors.Is(err, httpclient.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func TestDeleteEnvironmentShare(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/platform/document/v1/environment-shares/share-1", func(w http.ResponseWriter, r *http.Request) {
@@ -316,5 +413,62 @@ func TestDeleteEnvironmentShare(t *testing.T) {
 	err := h.DeleteEnvironmentShare(context.Background(), "share-1")
 	if err != nil {
 		t.Fatalf("DeleteEnvironmentShare() error: %v", err)
+	}
+}
+
+// TestDirectShareSendNotification pins the one lever the API offers against
+// notifying recipients: send-notification=false is sent only when asked for, on
+// both calls that add recipients, and the API default is otherwise left alone.
+func TestDirectShareSendNotification(t *testing.T) {
+	tests := []struct {
+		name     string
+		suppress bool
+		want     string
+	}{
+		{name: "default leaves the API default", suppress: false, want: ""},
+		{name: "suppress sends false", suppress: true, want: "false"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := map[string]string{}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/platform/document/v1/direct-shares", func(w http.ResponseWriter, r *http.Request) {
+				got["create"] = r.URL.Query().Get("send-notification")
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if _, leaked := body["SuppressNotification"]; leaked {
+					t.Error("SuppressNotification leaked into the request body")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":"share-1","documentId":"doc-123","access":["read"]}`))
+			})
+			mux.HandleFunc("/platform/document/v1/direct-shares/share-1/recipients/add", func(w http.ResponseWriter, r *http.Request) {
+				got["add"] = r.URL.Query().Get("send-notification")
+				w.WriteHeader(http.StatusNoContent)
+			})
+
+			h := NewHandler(newTestClient(t, mux))
+			recipients := []SsoEntity{{ID: "group-1", Type: "group"}}
+			if _, err := h.CreateDirectShare(context.Background(), CreateDirectShareRequest{
+				DocumentID:           "doc-123",
+				Access:               "read",
+				Recipients:           recipients,
+				SuppressNotification: tt.suppress,
+			}); err != nil {
+				t.Fatalf("CreateDirectShare() error: %v", err)
+			}
+			if err := h.AddDirectShareRecipientsWithOptions(context.Background(), "share-1", recipients,
+				AddDirectShareRecipientsOptions{SuppressNotification: tt.suppress}); err != nil {
+				t.Fatalf("AddDirectShareRecipientsWithOptions() error: %v", err)
+			}
+
+			for _, call := range []string{"create", "add"} {
+				if got[call] != tt.want {
+					t.Errorf("%s: send-notification = %q, want %q", call, got[call], tt.want)
+				}
+			}
+		})
 	}
 }

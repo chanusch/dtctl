@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 
@@ -17,7 +17,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	resapi "github.com/dynatrace-oss/dtctl/pkg/resources/api"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
-	"github.com/dynatrace-oss/dtctl/pkg/vfs"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // execAPICmd sends a request to an arbitrary platform API endpoint.
@@ -34,11 +34,19 @@ import (
 // the tool. This one resolves what the request actually does from the API's own
 // specification and gates it through the same safety checker as every native
 // mutating command.
-var execAPICmd = &cobra.Command{
-	Use:    "api <path>",
-	Short:  "Send a request to a platform API endpoint (escape hatch)",
-	Hidden: true,
-	Long: `Send a request to a platform API endpoint that has no native dtctl command.
+// Hidden, but reachable, so it declares a tier like anything else. It is
+// stable by decision (#544): demoting it would make it unusable under a stable
+// floor, in exactly the automation that has no native alternative yet. AGENTS.md's
+// "don't script against it" is advice about where integrations should end up,
+// not a statement about this contract.
+var execAPICmd = newExecAPICmd()
+
+func newExecAPICmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:    "api <path>",
+		Short:  "Send a request to a platform API endpoint (escape hatch)",
+		Hidden: true,
+		Long: `Send a request to a platform API endpoint that has no native dtctl command.
 
 Prefer the native command whenever one exists: it validates input, resolves names,
 formats output, and cannot be pointed at the wrong endpoint. This passthrough
@@ -75,8 +83,16 @@ Examples:
   dtctl get apis
   dtctl describe api <name> --operation 'POST /things'
 `,
-	Args: cobra.ExactArgs(1),
-	RunE: runExecAPI,
+		Args: cobra.ExactArgs(1),
+		RunE: runExecAPI,
+	}
+	c.Flags().StringP("method", "X", http.MethodGet, "HTTP method")
+	c.Flags().StringP("data", "d", "",
+		"request body: inline, @file, or @- for stdin (requires an explicit -X)")
+	c.Flags().StringArrayP("header", "H", nil,
+		"extra request header, 'Name: value' (repeatable)")
+	stability.MarkStable(c)
+	return c
 }
 
 // maxErrorBodyBytes caps how much of an error response is quoted back. The
@@ -115,7 +131,7 @@ func runExecAPI(cmd *cobra.Command, args []string) error {
 			"infer the safety operation too")
 	}
 
-	body, err := readRequestBody(data)
+	body, err := readRequestBody(cmdContext(cmd), data)
 	if err != nil {
 		return err
 	}
@@ -128,7 +144,7 @@ func runExecAPI(cmd *cobra.Command, args []string) error {
 	// The client is built before the gate because resolving what the request does
 	// requires reading the API's specification, which is itself a read. The gate
 	// then applies to the caller's request.
-	cfg, c, err := SetupClient()
+	cfg, c, err := setupClient(cmdContext(cmd))
 	if err != nil {
 		return err
 	}
@@ -138,17 +154,13 @@ func runExecAPI(cmd *cobra.Command, args []string) error {
 	class := resapi.Classify(method, canonicalPath, apiName, op)
 
 	nativeBase, native := resapi.NativeCoverageForPath(canonicalPath)
-	warnAboutTarget(canonicalPath, nativeBase, native.Command)
+	warnAboutTarget(cmdContext(cmd), canonicalPath, nativeBase, native.Command)
 
-	if dryRun {
-		return printAPIDryRun(cfg, method, requestPath, headerMap, body, class, native.Command)
+	if dryRun(cmdContext(cmd)) {
+		return printAPIDryRun(cmd, cfg, method, requestPath, headerMap, body, class, native.Command)
 	}
 
-	checker, err := NewSafetyChecker(cfg)
-	if err != nil {
-		return err
-	}
-	if err := checker.CheckError(class.SafetyOp, safety.OwnershipUnknown); err != nil {
+	if err := checkSafety(cmdContext(cmd), cfg, class.SafetyOp, safety.OwnershipUnknown); err != nil {
 		return &resapi.BlockedError{
 			Method:        method,
 			RequestPath:   requestPath,
@@ -180,7 +192,7 @@ func runExecAPI(cmd *cobra.Command, args []string) error {
 			apiName, op, native.Command)
 	}
 
-	return emitAPIResponse(method, requestPath, resp.StatusCode(),
+	return emitAPIResponse(cmdContext(cmd), method, requestPath, resp.StatusCode(),
 		resp.Header().Get("Content-Type"), resp.Body())
 }
 
@@ -211,7 +223,7 @@ func validateRequestPath(p string) (canonical string, err error) {
 // A user-named path goes through pkg/vfs, never os: under the service engine the
 // path names a file in the *request*, and reading it from the host disk would
 // read the server's filesystem on a caller's behalf.
-func readRequestBody(data string) ([]byte, error) {
+func readRequestBody(ctx context.Context, data string) ([]byte, error) {
 	if data == "" {
 		return nil, nil
 	}
@@ -225,7 +237,7 @@ func readRequestBody(data string) ([]byte, error) {
 	}
 	// ReadFileOrStdin maps "-" to the process stdin, which is the stream seam an
 	// embedded invocation swaps. Opening /dev/stdin as a path would slip past it.
-	content, err := vfs.ReadFileOrStdin(name)
+	content, err := vfsEnv(ctx).ReadFileOrStdin(name)
 	if err != nil {
 		return nil, fmt.Errorf("reading request body from %s: %w", data, err)
 	}
@@ -265,9 +277,9 @@ func parseHeaderFlags(headers []string) (map[string]string, error) {
 //
 // Both are warnings rather than errors. The caller typed the path; dtctl's job is
 // to say what it knows, not to refuse.
-func warnAboutTarget(requestPath, nativeBase, nativeCommand string) {
+func warnAboutTarget(ctx context.Context, requestPath, nativeBase, nativeCommand string) {
 	if nativeCommand != "" {
-		output.PrintWarning(
+		output.FprintWarning(currentStderr(ctx),
 			"%s is covered by '%s' — prefer the native command, which validates input, "+
 				"resolves names, and formats output",
 			nativeBase, nativeCommand)
@@ -276,7 +288,7 @@ func warnAboutTarget(requestPath, nativeBase, nativeCommand string) {
 		// Deliberately phrased in terms of the public tree rather than naming any
 		// particular non-public prefix: this is open source, and the warning is
 		// about stability, not about what exists.
-		output.PrintWarning(
+		output.FprintWarning(currentStderr(ctx),
 			"%s is outside the public /platform/ API tree; APIs there carry no compatibility "+
 				"guarantee and may change or disappear without notice",
 			requestPath)
@@ -289,22 +301,29 @@ func warnAboutTarget(requestPath, nativeBase, nativeCommand string) {
 // It reports the safety verdict instead of enforcing it — a dry run's job is to
 // show what would happen, and "this would be blocked, here is why" is more useful
 // than an error that hides the composed request.
-func printAPIDryRun(cfg *config.Config, method, requestPath string, headers map[string]string,
+//
+// In agent mode the same preview arrives as a dry-run envelope: each line's value
+// under its snake_case label in result.details, plus the rendered text. The body
+// is reported by size only, as it is for a human — the envelope is no more
+// willing to echo a request body than the preview is.
+func printAPIDryRun(cmd *cobra.Command, cfg *config.Config, method, requestPath string, headers map[string]string,
 	body []byte, class resapi.Classification, nativeCommand string) error {
 
 	const w = 14
-	output.DescribeKV("Method:", w, "%s", method)
-	output.DescribeKV("Path:", w, "%s", requestPath)
+	report := newDryRunReport(cmd).
+		KV("Method:", w, "%s", method).
+		KV("Path:", w, "%s", requestPath)
 	if len(headers) > 0 {
-		output.DescribeKV("Headers:", w, "%s", strings.Join(redactedHeaderLines(headers), ", "))
+		report.KV("Headers:", w, "%s", strings.Join(redactedHeaderLines(headers), ", "))
 	}
 	if len(body) > 0 {
-		output.DescribeKV("Body:", w, "%d bytes", len(body))
+		report.KV("Body:", w, "%d bytes", len(body))
 	}
-	output.DescribeKV("Gated as:", w, "%s", string(class.SafetyOp))
-	output.DescribeKV("Because:", w, "%s", class.Reason)
+	report.KV("Gated as:", w, "%s", string(class.SafetyOp)).
+		KV("Because:", w, "%s", class.Reason)
 	if nativeCommand != "" {
-		output.DescribeKV("Native:", w, "%s (preferred)", nativeCommand)
+		report.KV("Native:", w, "%s (preferred)", nativeCommand).
+			Detail("native", "%s", nativeCommand)
 	}
 
 	verdict := "permitted in this context"
@@ -313,11 +332,10 @@ func printAPIDryRun(cfg *config.Config, method, requestPath string, headers map[
 			verdict = "BLOCKED in this context — " + safetyRefusalReason(serr)
 		}
 	}
-	output.DescribeKV("Safety:", w, "%s", verdict)
-
-	fmt.Println()
-	fmt.Println("  Nothing was sent (--dry-run).")
-	return nil
+	return report.KV("Safety:", w, "%s", verdict).
+		Linef("").
+		Linef("  Nothing was sent (--dry-run).").
+		Print()
 }
 
 // safetyRefusalReason extracts the one-line reason from a safety refusal.
@@ -361,35 +379,38 @@ func redactedHeaderLines(headers map[string]string) []string {
 // text, or a binary archive, and wrapping those in an envelope would corrupt
 // them; the alternative (refusing to emit them) would make the command useless
 // for the uploads and exports it exists to reach.
-func emitAPIResponse(method, requestPath string, status int, contentType string, body []byte) error {
+func emitAPIResponse(ctx context.Context, method, requestPath string, status int, contentType string, body []byte) error {
 	if isHTMLResponse(contentType, body) {
 		// An HTML body from an API path is almost always a login redirect or an
 		// error page, not a result. Say so, because a caller piping this into a
 		// parser will otherwise see a confusing failure downstream.
-		output.PrintWarning(
+		output.FprintWarning(currentStderr(ctx),
 			"the response is HTML, not API data — %s %s may not be an API endpoint on this environment",
 			method, requestPath)
 	}
 
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return emitEmptyAPIResponse(status)
+		return emitEmptyAPIResponse(ctx, status)
 	}
 
 	var decoded any
 	if json.Unmarshal(trimmed, &decoded) != nil {
 		// Not JSON: verbatim passthrough (the declared raw protocol class).
-		if _, err := os.Stdout.Write(body); err != nil {
+		if _, err := currentStdout(ctx).Write(body); err != nil {
 			return err
 		}
-		if body[len(body)-1] != '\n' {
-			fmt.Println()
+		// Only when a human is watching, and never under --agent: redirected output
+		// must be byte-exact, or a downloaded archive no longer matches the checksum
+		// the API reports.
+		if writerIsTerminal(currentStdout(ctx)) && !agentMode(ctx) && body[len(body)-1] != '\n' {
+			fmt.Fprintln(currentStdout(ctx))
 		}
 		return nil
 	}
 
-	if agentMode || (outputFormat != "" && outputFormat != "table" && outputFormat != "wide") {
-		printer := NewPrinter()
+	if agentMode(ctx) || (outputFormat(ctx) != "" && outputFormat(ctx) != "table" && outputFormat(ctx) != "wide") {
+		printer := newPrinterCtx(ctx)
 		if ap := enrichAgent(printer, "exec", "api"); ap != nil {
 			ap.Context().Suggestions = []string{
 				"dtctl describe api <name> --operation '" + method + " <path>'  -- the operation's schema",
@@ -402,26 +423,26 @@ func emitAPIResponse(method, requestPath string, status int, contentType string,
 	// order, so this is the platform's own response — just readable.
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, trimmed, "", "  "); err != nil {
-		_, err := os.Stdout.Write(body)
+		_, err := currentStdout(ctx).Write(body)
 		return err
 	}
-	fmt.Println(pretty.String())
+	fmt.Fprintln(currentStdout(ctx), pretty.String())
 	return nil
 }
 
 // emitEmptyAPIResponse reports a body-less success (a 204, or a 200 with nothing
 // in it). Printing nothing at all would leave a caller unable to tell success
 // from a swallowed response.
-func emitEmptyAPIResponse(status int) error {
-	if agentMode {
-		printer := NewPrinter()
+func emitEmptyAPIResponse(ctx context.Context, status int) error {
+	if agentMode(ctx) {
+		printer := newPrinterCtx(ctx)
 		enrichAgent(printer, "exec", "api")
 		return printer.Print(map[string]any{
 			"status": status,
 			"body":   nil,
 		})
 	}
-	fmt.Printf("%d %s (no body)\n", status, http.StatusText(status))
+	fmt.Fprintf(currentStdout(ctx), "%d %s (no body)\n", status, http.StatusText(status))
 	return nil
 }
 
@@ -492,9 +513,7 @@ func apiRequestError(method, requestPath string, status int, body []byte,
 }
 
 func init() {
-	execAPICmd.Flags().StringP("method", "X", http.MethodGet, "HTTP method")
-	execAPICmd.Flags().StringP("data", "d", "",
-		"request body: inline, @file, or @- for stdin (requires an explicit -X)")
-	execAPICmd.Flags().StringArrayP("header", "H", nil,
-		"extra request header, 'Name: value' (repeatable)")
+}
+
+func init() {
 }

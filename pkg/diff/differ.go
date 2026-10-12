@@ -12,6 +12,7 @@ import (
 
 type Differ struct {
 	options DiffOptions
+	vfsEnv  vfs.Env
 }
 
 type DiffOptions struct {
@@ -77,6 +78,13 @@ func NewDiffer(opts DiffOptions) *Differ {
 	return &Differ{options: opts}
 }
 
+// WithVFS sets the filesystem and stdin CompareFiles reads from. The zero Env
+// keeps the process's.
+func (d *Differ) WithVFS(env vfs.Env) *Differ {
+	d.vfsEnv = env
+	return d
+}
+
 func (d *Differ) Compare(left, right interface{}, leftLabel, rightLabel string) (*DiffResult, error) {
 	leftNorm := normalize(left, d.options.IgnoreMetadata, d.options.IgnoreOrder)
 	rightNorm := normalize(right, d.options.IgnoreMetadata, d.options.IgnoreOrder)
@@ -102,17 +110,34 @@ func (d *Differ) Compare(left, right interface{}, leftLabel, rightLabel string) 
 }
 
 func (d *Differ) CompareFiles(leftPath, rightPath string) (*DiffResult, error) {
-	left, err := parseFile(leftPath)
+	left, err := d.parseFile(leftPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse left file: %w", err)
 	}
 
-	right, err := parseFile(rightPath)
+	right, err := d.parseFile(rightPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse right file: %w", err)
 	}
 
 	return d.Compare(left, right, leftPath, rightPath)
+}
+
+// CompareData compares two already-read YAML or JSON documents. Callers that
+// resolve their own inputs (e.g. stdin for `-f -`) use it instead of
+// CompareFiles; the labels name each side in the output.
+func (d *Differ) CompareData(leftData, rightData []byte, leftLabel, rightLabel string) (*DiffResult, error) {
+	left, err := parseData(leftData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse left file: %w", err)
+	}
+
+	right, err := parseData(rightData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse right file: %w", err)
+	}
+
+	return d.Compare(left, right, leftLabel, rightLabel)
 }
 
 func (d *Differ) getFormatter() Formatter {
@@ -138,7 +163,7 @@ func (d *Differ) getFormatter() Formatter {
 	}
 }
 
-func parseFile(path string) (interface{}, error) {
+func (d *Differ) parseFile(path string) (interface{}, error) {
 	var data []byte
 	var err error
 
@@ -146,11 +171,15 @@ func parseFile(path string) (interface{}, error) {
 		return nil, fmt.Errorf("stdin not yet implemented")
 	}
 
-	data, err = readFile(path)
+	data, err = d.vfsEnv.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
+	return parseData(data)
+}
+
+func parseData(data []byte) (interface{}, error) {
 	var result interface{}
 	if err := yaml.Unmarshal(data, &result); err == nil {
 		return result, nil
@@ -289,11 +318,4 @@ func calculateImpact(summary DiffSummary) ImpactLevel {
 	}
 
 	return ImpactLow
-}
-
-// readFile reads a user-named path (`dtctl diff -f a.yaml -f b.yaml`) through
-// the vfs seam, so an embedded invocation compares the files in its request
-// rather than whatever sits at that path on the host's disk.
-func readFile(path string) ([]byte, error) {
-	return vfs.ReadFile(path)
 }

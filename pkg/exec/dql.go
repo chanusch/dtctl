@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,8 @@ type (
 	Contributions         = sdkquery.Contributions
 	BucketContribution    = sdkquery.BucketContribution
 	QueryNotification     = sdkquery.Notification
+	ColumnTypes           = sdkquery.ColumnTypes
+	ColumnType            = sdkquery.ColumnType
 	AnalysisTimeframe     = sdkquery.AnalysisTimeframe
 	MetricInfo            = sdkquery.MetricInfo
 	DQLVerifyRequest      = sdkquery.VerifyRequest
@@ -41,6 +45,7 @@ type (
 	SyntaxPosition        = sdkquery.SyntaxPosition
 	Position              = sdkquery.Position
 	QueryError            = sdkquery.QueryError
+	QueryStateError       = sdkquery.StateError
 )
 
 // DQLExecutor handles DQL query execution
@@ -48,12 +53,48 @@ type DQLExecutor struct {
 	client         *client.Client
 	sdk            *sdkquery.Handler
 	tokenRefresher func() (string, error)
+	// probe overrides the runner for empty-result diagnostic queries (tests).
+	probe probeFunc
+	// stdout and stderr receive the executor's output; nil means the process
+	// streams. vfsEnv resolves query files; the zero value is the process's.
+	stdout io.Writer
+	stderr io.Writer
+	vfsEnv vfs.Env
 }
 
 // NewDQLExecutor creates a new DQL executor
 func NewDQLExecutor(c *client.Client) *DQLExecutor {
 	sdk := sdkquery.NewHandler(httpclient.Wrap(c.HTTP()))
 	return &DQLExecutor{client: c, sdk: sdk}
+}
+
+// WithStreams directs the executor's results to stdout and its notices,
+// progress and diagnostics to stderr, for a caller that owns the invocation's
+// streams. nil keeps the process stream.
+func (e *DQLExecutor) WithStreams(stdout, stderr io.Writer) *DQLExecutor {
+	e.stdout, e.stderr = stdout, stderr
+	return e
+}
+
+// WithVFS sets the filesystem and stdin the executor reads query files from.
+// The zero Env keeps the process's.
+func (e *DQLExecutor) WithVFS(env vfs.Env) *DQLExecutor {
+	e.vfsEnv = env
+	return e
+}
+
+func (e *DQLExecutor) outW() io.Writer {
+	if e.stdout == nil {
+		return os.Stdout
+	}
+	return e.stdout
+}
+
+func (e *DQLExecutor) errW() io.Writer {
+	if e.stderr == nil {
+		return os.Stderr
+	}
+	return e.stderr
 }
 
 // WithTokenRefresher sets an optional callback that is invoked when a poll request
@@ -105,12 +146,16 @@ const (
 type DQLExecuteOptions struct {
 	// Output formatting options
 	OutputFormat string
-	JQFilter     string     // jq filter expression applied before rendering
-	AgentMode    bool       // Enable agent mode (e.g. for Dynatrace API)
-	Decode       DecodeMode // Snapshot payload decoding mode
-	Width        int        // Chart width (0 = default)
-	Height       int        // Chart height (0 = default)
-	Fullscreen   bool       // Use terminal dimensions for chart
+	JQFilter     string // jq filter expression applied before rendering
+	AgentMode    bool   // Enable agent mode (e.g. for Dynatrace API)
+	// AutoFormatByDefault reports that OutputFormat is auto only because it is
+	// the agent-mode default (no -o given), so a non-JSON result carries the
+	// -o json opt-out suggestion.
+	AutoFormatByDefault bool
+	Decode              DecodeMode // Snapshot payload decoding mode
+	Width               int        // Chart width (0 = default)
+	Height              int        // Chart height (0 = default)
+	Fullscreen          bool       // Use terminal dimensions for chart
 
 	// Query limit options
 	MaxResultRecords       int64   // Maximum number of result records (0 = use default)
@@ -132,12 +177,45 @@ type DQLExecuteOptions struct {
 	// effect unless the API actually returned type information.
 	EmitTypes bool
 
+	// TypesRequested reports that the user explicitly asked for the type block:
+	// --include-types was passed and is true. EmitTypes is set whenever the flag
+	// was passed at all, --include-types=false included; the "has no effect"
+	// warning keys off this field instead, so declining the block never warns
+	// about not getting it. It does not affect what is printed on stdout.
+	TypesRequested bool
+
 	// Typed opts in to casting scalar columns (long, double, duration, boolean)
 	// to their native JSON/YAML types using the DQL type metadata, instead of the
 	// wire form where integer-valued columns arrive as strings. Off by default so
 	// output stays faithful to the API; implies IncludeTypes so the mapping is
 	// available. See output.ApplyTrueTypes.
 	Typed bool
+
+	// Compact omits null values and hoists the columns that hold one value in
+	// every row into a `constant` map (#578). It applies to the agent envelope
+	// (inline records and the spill manifest) and to plain json/yaml/toon
+	// output; the command layer defaults it on in agent mode. Never applied
+	// under --jq, whose program addresses the full rows.
+	Compact bool
+
+	// Series selects how the numeric arrays of timeseries records are rendered
+	// (--series): full (default, unchanged), a per-series summary, or
+	// extreme-preserving downsampling. See output.ApplySeriesMode.
+	Series output.SeriesMode
+
+	// Precision rounds every float in the records to this many significant
+	// digits (--precision); 0 leaves values unchanged.
+	Precision int
+
+	// SeriesDefaulted and PrecisionDefaulted mark Series/Precision as the
+	// agent-mode defaults rather than the caller's explicit choice. When a
+	// defaulted value actually changed the result, the agent envelope carries
+	// one suggestion naming the opt-out.
+	SeriesDefaulted    bool
+	PrecisionDefaulted bool
+
+	// seriesAdvice is that suggestion, computed by printResults.
+	seriesAdvice string
 
 	// Timeframe options
 	DefaultTimeframeStart string // Query timeframe start timestamp (ISO-8601/RFC3339)
@@ -156,7 +234,16 @@ type DQLExecuteOptions struct {
 	ShowProgress bool
 
 	// Metadata options
-	MetadataFields []string // Metadata fields to include; nil/empty = disabled, ["all"] = all fields, specific names = filtered
+	MetadataFields []string // Metadata fields to include; nil/empty = disabled, ["all"] = all fields, ["minimal"] = lean agent set, specific names = filtered
+
+	// MetadataDefaulted records that agent mode chose MetadataFields
+	// (["minimal"]) because -M was not given, so an envelope that dropped
+	// something names the -M=all opt-out.
+	MetadataDefaulted bool
+
+	// Verbose mirrors -v. Under --metadata=minimal it keeps the inline spill
+	// decision's measurement details (threshold/measured bytes) in the envelope.
+	Verbose bool
 
 	// Segment options
 	Segments []FilterSegmentRef // Filter segments to apply to the query
@@ -170,11 +257,25 @@ type DQLExecuteOptions struct {
 	// unchanged from today's behaviour.
 	Spill SpillOptions
 
+	// MaxFieldChars clips every string value in an agent-mode result to this
+	// many runes, ending a clipped value in "…(+N chars)" (0 = no cap). Spilled
+	// files always keep the full values. The command layer defaults it to
+	// output.DefaultAgentMaxFieldChars in agent mode.
+	MaxFieldChars int
+
+	// MaxOutputBytes bounds the agent-mode envelope, measured on the bytes
+	// actually written to stdout (0 = no budget). An inline result over it keeps
+	// the leading rows that fit and marks the cut on the context.
+	MaxOutputBytes int64
+
 	// TenantID and ContextName are provenance recorded in the spill manifest and
 	// used to partition the spill directory by context (D9). They are not part of
 	// query execution and are only consulted on the spill path.
 	TenantID    string
 	ContextName string
+
+	// Decorate amends the agent envelope context; records is nil when rows streamed to disk.
+	Decorate func(ctx *output.ResponseContext, result *DQLQueryResponse, records []map[string]interface{})
 }
 
 // DQLVerifyOptions configures DQL query verification
@@ -267,6 +368,13 @@ func (e *DQLExecutor) ExecuteWithOptions(query string, opts DQLExecuteOptions) e
 
 // ExecuteWithContext executes a DQL query with a cancellable context and prints the results.
 func (e *DQLExecutor) ExecuteWithContext(ctx context.Context, query string, opts DQLExecuteOptions) error {
+	// When the destination takes rows one at a time, decode them straight into
+	// it instead of holding the whole result (see dql_stream.go). A small result
+	// still takes the buffered path below, byte for byte.
+	if plan, ok := e.planStream(opts); ok {
+		return e.executeStreaming(ctx, query, opts, plan)
+	}
+
 	result, err := e.ExecuteQueryWithContext(ctx, query, opts)
 	if err != nil {
 		return err
@@ -291,6 +399,14 @@ func (e *DQLExecutor) ExecuteQueryWithOptions(query string, opts DQLExecuteOptio
 // If ctx is cancelled while the query is polling, a best-effort cancel request is sent
 // to the Grail backend before returning.
 func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string, opts DQLExecuteOptions) (*DQLQueryResponse, error) {
+	return e.runQuery(ctx, query, opts, nil)
+}
+
+// runQuery drives execute + poll. With sink nil the response carries the rows,
+// as every caller of ExecuteQueryWithContext expects; with a sink the rows are
+// delivered to it as they decode and the response comes back without them (see
+// dql_stream.go).
+func (e *DQLExecutor) runQuery(ctx context.Context, query string, opts DQLExecuteOptions, sink *streamCollector) (*DQLQueryResponse, error) {
 	req := buildExecuteRequest(query, opts)
 	handler := e.sdkHandler(opts.ClientContext)
 
@@ -312,14 +428,25 @@ func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string,
 	// interactive TTY, so piped/agent/structured output is untouched. Stop()
 	// erases the line on error and cancellation; Complete() replaces it with a
 	// summary on success.
-	reporter := output.NewProgressReporter(opts.ShowProgress, opts.AgentMode)
+	reporter := output.NewProgressReporterTo(opts.ShowProgress, opts.AgentMode, e.errW())
 	defer reporter.Stop()
 
 	// Remember the last live scan totals so the completion summary can fall back
 	// to them if the terminal result metadata omits scannedBytes/Records. The
 	// closure runs synchronously in this goroutine, so these need no locking.
 	var lastScannedBytes, lastScannedRecords int64
-	result, err := handler.ExecuteAndPollWithOptions(ctx, req, sdkquery.ExecuteAndPollOptions{
+	var onRecord func(map[string]interface{}) error
+	if sink != nil {
+		onRecord = sink.observe
+		// Rows streamed to stdout arrive while the bar may still be redrawing on
+		// stderr. The gate only releases rows once the query has finished, so
+		// the bar is settled then, with the live scan totals: the final metadata
+		// follows the rows.
+		sink.beforeStdout = func() {
+			reporter.Complete(output.ProgressState{Progress: 100, ScannedBytes: lastScannedBytes, ScannedRecords: lastScannedRecords})
+		}
+	}
+	result, err := streamCall(ctx, handler, req, sdkquery.ExecuteAndPollOptions{
 		OnUnauthorized: onUnauthorized,
 		OnUpdate: func(u sdkquery.PollUpdate) {
 			state := output.ProgressState{
@@ -338,7 +465,7 @@ func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string,
 			}
 			reporter.Update(state)
 		},
-	})
+	}, onRecord)
 	if err != nil {
 		// Clear the bar before any further stderr output (cancellation notice,
 		// error hints). Stop is idempotent; the defer remains a safety net.
@@ -350,9 +477,9 @@ func (e *DQLExecutor) ExecuteQueryWithContext(ctx context.Context, query string,
 		// emit one to separate the message from a shell's "^C" echo.
 		if ctx.Err() != nil {
 			if !drawing {
-				fmt.Fprintln(os.Stderr)
+				fmt.Fprintln(e.errW())
 			}
-			fmt.Fprintln(os.Stderr, "Query cancelled.")
+			fmt.Fprintln(e.errW(), "Query cancelled.")
 			return nil, nil
 		}
 		// Enhance known error types with CLI-specific hints.
@@ -449,6 +576,12 @@ func singleQuoteHint() string {
 
 // VerifyQuery verifies a DQL query without executing it
 func (e *DQLExecutor) VerifyQuery(query string, opts DQLVerifyOptions) (*DQLVerifyResponse, error) {
+	return e.VerifyQueryWithContext(context.Background(), query, opts)
+}
+
+// VerifyQueryWithContext is VerifyQuery bound to the caller's context, so an
+// embedding caller that goes away stops waiting on the verification.
+func (e *DQLExecutor) VerifyQueryWithContext(ctx context.Context, query string, opts DQLVerifyOptions) (*DQLVerifyResponse, error) {
 	req := sdkquery.VerifyRequest{
 		Query:                  query,
 		GenerateCanonicalQuery: opts.GenerateCanonicalQuery,
@@ -459,7 +592,7 @@ func (e *DQLExecutor) VerifyQuery(query string, opts DQLVerifyOptions) (*DQLVeri
 	handler := e.sdkHandler(opts.ClientContext)
 
 	// Create context with 30-second timeout (verify is fast)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	return handler.Verify(ctx, req)
@@ -485,7 +618,7 @@ func classifyNotification(notificationType, message string) string {
 		return notifScanLimit
 	case "RESULT_LIMIT_RECORDS", "RESULT_LIMIT_BYTES":
 		return notifResultLimit
-	case "FETCH_TIMEOUT":
+	case "FETCH_TIMEOUT", "FETCH_EXEC_TIME_LIMIT":
 		return notifTimeout
 	case "SAMPLING_APPLIED":
 		return notifSampling
@@ -499,20 +632,44 @@ func classifyNotification(notificationType, message string) string {
 		return notifScanLimit
 	case strings.Contains(msg, "result has been limited") || strings.Contains(msg, "limited to"):
 		return notifResultLimit
+	case strings.Contains(msg, "internal time limit"):
+		// Grail cuts a slow read short and says so only in the message on some
+		// deployments; without this the result reads as complete and every row
+		// below the cut becomes a fabricated absence.
+		return notifTimeout
+	}
+	return ""
+}
+
+// Causes of an incomplete result, as reported by PartialCause. They are
+// distinguished because the remedies are not interchangeable: a scan cap wants
+// less data scanned or a bigger cap, a result cap wants aggregation, a timeout
+// wants a narrower read. Collapsing them into one "cut short by a limit"
+// message forces the reader to guess which of three fixes applies.
+const (
+	PartialScanLimit   = notifScanLimit
+	PartialResultLimit = notifResultLimit
+	PartialTimeout     = notifTimeout
+	PartialConsumption = notifConsumption
+)
+
+// PartialCause reports why a query notification means the result is
+// incomplete, as one of the Partial* constants, or "" if the notification does
+// not truncate. Sampling is excluded — it is declared in the query text, not a
+// silent truncation.
+func PartialCause(n QueryNotification) string {
+	switch c := classifyNotification(n.NotificationType, n.Message); c {
+	case notifResultLimit, notifScanLimit, notifTimeout, notifConsumption:
+		return c
 	}
 	return ""
 }
 
 // ResultIsPartial reports whether a query notification means the result is
 // incomplete: a record/byte cap, scan limit, fetch timeout, or consumption
-// stop cut it short. Sampling is excluded — it is declared in the query text,
-// not a silent truncation.
+// stop cut it short.
 func ResultIsPartial(n QueryNotification) bool {
-	switch classifyNotification(n.NotificationType, n.Message) {
-	case notifResultLimit, notifScanLimit, notifTimeout, notifConsumption:
-		return true
-	}
-	return false
+	return PartialCause(n) != ""
 }
 
 // getHintForNotification returns a concise CLI hint (a single line, for stderr)
@@ -595,6 +752,30 @@ func notificationAdvice(notifications []QueryNotification) (warnings, suggestion
 	return warnings, suggestions
 }
 
+// approximationPrefix leads every approximation line, on stderr and in the
+// agent envelope's warnings alike.
+const approximationPrefix = "Result is approximate: "
+
+// approximationWarnings turns Grail's metadata.grail.approximations into
+// warning lines. An approximation is a successful query that answered a
+// slightly different question than the one written (e.g. a substring match
+// where the query asked for a token match); without the line the caller reads
+// the number as exact, and nothing else in the output hints otherwise (#415).
+func approximationWarnings(result *DQLQueryResponse) []string {
+	if result == nil {
+		return nil
+	}
+	approximations := result.GetApproximations()
+	if len(approximations) == 0 {
+		return nil
+	}
+	warnings := make([]string, 0, len(approximations))
+	for _, a := range approximations {
+		warnings = append(warnings, approximationPrefix+a)
+	}
+	return warnings
+}
+
 // heavyScanWarnBytes is the scanned-data level above which the agent envelope
 // warns. An agent that cannot see the bill will happily re-run an 85 GB scan
 // it already paid for; the warning makes the cost visible and steers toward
@@ -633,7 +814,7 @@ func windowAdvice(query string, records []map[string]interface{}, opts DQLExecut
 	if opts.DefaultTimeframeStart != "" || opts.DefaultTimeframeEnd != "" {
 		return nil
 	}
-	if len(records) > 1 || (len(records) == 1 && !allAggregatesZero(records[0])) {
+	if !isEmptyResult(records) {
 		return nil
 	}
 	if strings.Contains(query, "from:") || strings.Contains(query, "to:") || strings.Contains(query, "timeframe:") {
@@ -647,6 +828,46 @@ func windowAdvice(query string, records []map[string]interface{}, opts DQLExecut
 		advice = "# empty result from the DEFAULT query window (the last 2h): metric.series lists only series with datapoints INSIDE the window — widen it for discovery, e.g. `fetch metric.series, from:now()-7d`"
 	}
 	return []string{advice}
+}
+
+// isEmptyResult reports whether a result carries no rows, or only the single
+// all-zero row a `summarize count()` yields when nothing matched.
+func isEmptyResult(records []map[string]interface{}) bool {
+	return len(records) == 0 || (len(records) == 1 && allAggregatesZero(records[0]))
+}
+
+// AgentDefaultPrecision is the significant-digit rounding agent mode applies
+// when --precision is not given.
+const AgentDefaultPrecision = 4
+
+// defaultSeriesAdvice names the opt-out for an agent-mode default that
+// actually changed the result: a summarized series, a rounded number, or both.
+// An explicit --series/--precision, or a default that changed nothing, gets no
+// advice.
+func defaultSeriesAdvice(effect output.SeriesEffect, opts DQLExecuteOptions) string {
+	summarized := effect.Summarized && opts.SeriesDefaulted
+	rounded := effect.Rounded && opts.PrecisionDefaulted
+	switch {
+	case summarized && rounded:
+		// The summary's statistics lost digits, or --series=full alone would
+		// bring the points back rounded, so name both flags: together they
+		// restore the raw values exactly.
+		return fmt.Sprintf("# timeseries summarized and numbers rounded to %d significant digits (agent-mode default) — add --series=full --precision 0 for the raw values", opts.Precision)
+	case summarized:
+		return "# timeseries summarized (agent-mode default) — add --series=full for the raw datapoints"
+	case rounded:
+		return fmt.Sprintf("# numbers rounded to %d significant digits (agent-mode default) — add --precision 0 for full precision", opts.Precision)
+	}
+	return ""
+}
+
+// seriesAdvice returns the agent-default opt-out hint, if any, as a slice to
+// append to an envelope's suggestions.
+func seriesAdvice(opts DQLExecuteOptions) []string {
+	if opts.seriesAdvice == "" {
+		return nil
+	}
+	return []string{opts.seriesAdvice}
 }
 
 // entityFetchRe spots a query fetching a classic dt.entity.* table, and
@@ -666,6 +887,60 @@ func lookbackAdvice(query string) []string {
 	}
 	t := strings.ToUpper(m[1])
 	return []string{fmt.Sprintf("# dt.entity.%s is an event-LOOKBACK view (entities seen in the query window), not the live topology — for a current-state census or inventory use: dtctl query 'smartscapeNodes \"%s\" | summarize count()'", m[1], t)}
+}
+
+// sampleAdvice warns that an unsorted `| limit N` returns the first records read, not a sample.
+func sampleAdvice(query string, rows int) []string {
+	stages := splitStages(query)
+	if len(stages) < 2 || fetchStageRe.FindStringSubmatch(stages[0]) == nil {
+		return nil
+	}
+	sorted := false
+	for _, st := range stages[1:] {
+		cmd, rest := splitCommand(st)
+		switch strings.ToLower(cmd) {
+		case "summarize", "maketimeseries", "fieldssummary", "append", "join", "lookup":
+			return nil
+		case "sort":
+			sorted = true
+		case "limit":
+			n, err := strconv.Atoi(strings.TrimSpace(rest))
+			if err != nil || n != rows || sorted || n == 0 {
+				return nil
+			}
+			return []string{fmt.Sprintf("# these %d rows are the first records `limit %d` let through, not a representative sample — they cannot show how often something occurs or that it never does; aggregate before concluding, e.g. `| summarize count(), by:{<field>}`", n, n)}
+		}
+	}
+	return nil
+}
+
+// durationAdvice names duration columns, which arrive as nanosecond integers.
+func durationAdvice(query string, result *DQLQueryResponse) []string {
+	if result == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var cols []string
+	for _, g := range result.GetTypes() {
+		for name, ct := range g.Mappings {
+			if ct.Type == "duration" && !seen[name] {
+				seen[name] = true
+				cols = append(cols, name)
+			}
+		}
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	sort.Strings(cols)
+	if len(cols) > 4 {
+		cols = cols[:4]
+	}
+	advice := fmt.Sprintf("# %s: durations in NANOSECONDS (1 ms = 1,000,000) — convert before reporting", backtickList(cols))
+	if topLevelIndex(strings.ToLower(query), "summarize") < 0 && topLevelIndex(strings.ToLower(query), "maketimeseries") < 0 {
+		advice += fmt.Sprintf("; one record's duration is not a typical one, use e.g. `| summarize p50 = percentile(%s, 50), p90 = percentile(%s, 90)`", cols[0], cols[0])
+	}
+	return []string{advice}
 }
 
 // allAggregatesZero reports whether a single result row carries only zero
@@ -705,14 +980,14 @@ func (e *DQLExecutor) PrintNotifications(notifications []QueryNotification) {
 			severity = "INFO"
 		}
 		if severity == "WARNING" || severity == "WARN" {
-			output.PrintWarning("%s", n.Message)
+			output.FprintWarning(e.errW(), "%s", n.Message)
 			if hint := getHintForNotification(n.NotificationType, n.Message); hint != "" {
-				output.PrintHint("%s", hint)
+				output.FprintHint(e.errW(), "%s", hint)
 			}
 		} else if severity == "ERROR" {
-			output.PrintHumanError("%s", n.Message)
+			output.FprintHumanError(e.errW(), "%s", n.Message)
 			if hint := getHintForNotification(n.NotificationType, n.Message); hint != "" {
-				output.PrintHint("%s", hint)
+				output.FprintHint(e.errW(), "%s", hint)
 			}
 		}
 	}
@@ -720,18 +995,46 @@ func (e *DQLExecutor) PrintNotifications(notifications []QueryNotification) {
 
 // printResults prints the query results with the given options
 func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts DQLExecuteOptions) error {
+	return e.printRecords(query, result, result.GetRecords(), opts)
+}
+
+// printRecords is printResults with the rows supplied separately, so the
+// streaming path can hand over a buffer it collected itself from a response
+// that carries none (see dql_stream.go).
+func (e *DQLExecutor) printRecords(query string, result *DQLQueryResponse, records []map[string]interface{}, opts DQLExecuteOptions) error {
 	effectiveFormat := opts.OutputFormat
 	if opts.JQFilter != "" {
 		effectiveFormat = output.NormalizeJQOutputFormat(effectiveFormat)
 	}
 
-	// Print any notifications/warnings first
-	if notifications := result.GetNotifications(); len(notifications) > 0 {
+	// Notifications go to stderr ahead of the rows — except where the agent
+	// envelope carries them in context.warnings/suggestions: printing them
+	// there too made a host that merges the streams read the advice twice,
+	// once as prose it cannot parse. An agent that asked for bytes the envelope
+	// cannot wrap (-o csv/yaml) still gets them on stderr, below.
+	notificationsPrinted := false
+	printNotifications := func() {
+		if notificationsPrinted {
+			return
+		}
+		notificationsPrinted = true
+		// Approximations ride with the notifications: stderr here, the
+		// envelope's context.warnings in agent mode.
+		for _, w := range approximationWarnings(result) {
+			output.FprintWarning(e.errW(), "%s", w)
+		}
+		notifications := result.GetNotifications()
+		if len(notifications) == 0 {
+			return
+		}
 		e.PrintNotifications(notifications)
+		if advice := unsortedSummarizeAdvice(query, notifications); advice != "" {
+			output.FprintHint(e.errW(), "%s", advice)
+		}
 	}
-
-	// Extract records from result
-	records := result.GetRecords()
+	if !opts.AgentMode {
+		printNotifications()
+	}
 
 	// Apply snapshot decoding if requested
 	if opts.Decode != DecodeNone && len(records) > 0 {
@@ -752,6 +1055,23 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 	colTypes := columnTypeMappings(result)
 	if opts.Typed {
 		output.ApplyTrueTypes(records, colTypes)
+	}
+
+	// --series / --precision: compact timeseries arrays and round numbers.
+	// Opt-in; applied before the spill/agent branch so the envelope, --jq and a
+	// spilled file all see the same records. Table and CSV get a summary as one
+	// readable cell instead of an object they would print as "<n items>" — but
+	// not in agent mode, where the "table" default is an unset format and the
+	// records go into the JSON envelope.
+	if opts.Series.Kind != output.SeriesFull || opts.Precision > 0 {
+		tabular := effectiveFormat == "csv"
+		switch effectiveFormat {
+		case "", "table", "wide":
+			tabular = !opts.AgentMode
+		}
+		var effect output.SeriesEffect
+		records, effect = output.ApplySeriesModeWithEffect(records, opts.Series, opts.Precision, tabular)
+		opts.seriesAdvice = defaultSeriesAdvice(effect, opts)
 	}
 
 	// Spill path (D2/D3/D19-buffered): when spilling is enabled, a large result
@@ -775,16 +1095,53 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		}
 	}
 
-	// Extract metadata if requested
+	// Extract metadata if requested, resolving --metadata=minimal against this
+	// response so every renderer below applies the same concrete selection.
 	var meta *output.QueryMetadata
+	var metaAdvice []string
 	if len(opts.MetadataFields) > 0 {
 		meta = extractQueryMetadata(result)
+		metaAdvice = metadataDefaultAdvice(query, meta, opts, false)
+		opts.MetadataFields = resolveMetadataFields(query, meta, opts)
+	}
+
+	// Agent mode + --jq: emit the ordinary agent envelope with the filter output
+	// in `result`, so `ok` and `context` stay machine-checkable exactly as they
+	// are without --jq (#413). The query path used to rewrite the filter into a
+	// bare {result, metadata} object instead, which dropped `ok` — the one field
+	// a consumer could have used to tell success from failure.
+	if opts.AgentMode && opts.JQFilter != "" {
+		return e.printAgentJQ(query, result, records, meta, effectiveFormat, opts, metaAdvice)
+	}
+
+	// No envelope from here on: stderr is the only channel left.
+	printNotifications()
+
+	// -o auto: pick the format from the rows, so the switch below prints exactly
+	// what that explicit format would. With --jq the rows are not what gets
+	// printed, so the auto printer decides after the filter instead.
+	if output.IsAutoFormat(effectiveFormat) && opts.JQFilter == "" {
+		choice := output.ChooseAutoFormat(records)
+		output.FprintAutoChoice(e.errW(), choice)
+		effectiveFormat = choice.Format
+	}
+
+	// An explicit --include-types asks for the type block as a sibling of
+	// "records", which only the document-shaped encodings in the default branch
+	// below have room for. Say so on stderr rather than dropping it silently
+	// (#435); stdout is unchanged. Checked after -o auto has resolved, so an
+	// auto run that picks csv warns and one that picks yaml does not.
+	if opts.TypesRequested {
+		if w := includeTypesInertWarning(effectiveFormat, len(records)); w != "" {
+			output.FprintWarning(e.errW(), "%s", w)
+		}
 	}
 
 	printer := output.NewPrinterWithOpts(output.PrinterOptions{
 		Format:     effectiveFormat,
+		Writer:     e.outW(),
+		Notice:     e.errW(),
 		JQFilter:   opts.JQFilter,
-		AgentMode:  opts.AgentMode,
 		Width:      opts.Width,
 		Height:     opts.Height,
 		Fullscreen: opts.Fullscreen,
@@ -806,7 +1163,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 			return err
 		}
 		if meta != nil {
-			fmt.Fprint(os.Stderr, output.FormatMetadataFooter(meta, opts.MetadataFields))
+			fmt.Fprint(e.errW(), output.FormatMetadataFooter(meta, opts.MetadataFields))
 		}
 		return nil
 
@@ -815,7 +1172,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 			return nil
 		}
 		if meta != nil {
-			fmt.Fprint(os.Stderr, output.FormatMetadataCSVComments(meta, opts.MetadataFields))
+			fmt.Fprint(e.errW(), output.FormatMetadataCSVComments(meta, opts.MetadataFields))
 		}
 		return printer.PrintList(records)
 
@@ -834,7 +1191,7 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 
 	case "chart", "sparkline", "spark", "barchart", "bar", "braille", "br":
 		if meta != nil {
-			output.PrintWarning("--metadata is not supported with chart output formats")
+			output.FprintWarning(e.errW(), "--metadata is not supported with chart output formats")
 		}
 		if len(records) > 0 {
 			return printer.Print(map[string]interface{}{"records": records})
@@ -843,10 +1200,19 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 
 	default:
 		out := make(map[string]interface{})
-		if len(records) > 0 {
+		if c := compactionFor(records, opts); c != nil && len(records) > 0 {
+			// Map keys encode sorted, so `constant` lands before `records`.
+			out["records"] = compactedRows(c, records, output.NormalizeMeasureEncoding(effectiveFormat))
+			if len(c.Constant) > 0 {
+				out["constant"] = c.Constant
+			}
+		} else if len(records) > 0 {
 			out["records"] = records
 		} else if result.Result != nil {
-			out["records"] = result.Result.Records
+			// An empty result is still a result: emit an empty array rather than
+			// the nil slice's `null`, which --jq could not tell apart from a
+			// filter that addressed the wrong key (#413).
+			out["records"] = []map[string]interface{}{}
 		}
 		if meta != nil {
 			out["metadata"] = output.MetadataToMap(meta, opts.MetadataFields)
@@ -865,6 +1231,104 @@ func (e *DQLExecutor) printResults(query string, result *DQLQueryResponse, opts 
 		}
 		return printer.Print(result)
 	}
+}
+
+// includeTypesInertWarning returns the warning for an explicit --include-types
+// whose type block the resolved output format cannot carry, or "" when the
+// format emits it. It mirrors the format switch in printResults: every format
+// with its own case there prints the rows alone, and only the default branch
+// (json/yaml/toon — and, under --jq, the filter input) carries "types".
+//
+// The chart formats depend on rows, the number of records the chart branch
+// sees. With none it hands the raw API response to the chart printer, which
+// falls back to JSON and so prints the response's own "types" block; there is
+// nothing to warn about then. With rows, it passes {"records": ...} alone, so
+// even the not-chartable JSON fallback carries no types.
+func includeTypesInertWarning(format string, rows int) string {
+	switch format {
+	case "chart", "sparkline", "spark", "barchart", "bar", "braille", "br":
+		if rows == 0 {
+			return ""
+		}
+		return fmt.Sprintf("--include-types has no effect with %s output (types are emitted for -o json/yaml/toon)", format)
+	case "table", "wide", "csv", "jsonl":
+		return fmt.Sprintf("--include-types has no effect with %s output (types are emitted for -o json/yaml/toon)", format)
+	case "parquet":
+		return "--include-types has no effect with parquet output (the column types are already encoded in the Parquet schema)"
+	}
+	return ""
+}
+
+// printAgentJQ emits an agent envelope whose result is the --jq output.
+//
+// The filter input is the result payload — {records, metadata?, types?} — which
+// is both the shape the flag was requested with (#272: --jq '.records[].timestamp')
+// and the same "the filter sees the payload, not the envelope" rule every other
+// command follows. `records` is always present, even when empty, so --jq '.records'
+// on an empty result yields [] rather than the null that a missing key would give.
+func (e *DQLExecutor) printAgentJQ(query string, result *DQLQueryResponse, records []map[string]interface{}, meta *output.QueryMetadata, effectiveFormat string, opts DQLExecuteOptions, metaAdvice []string) error {
+	if records == nil {
+		records = []map[string]interface{}{}
+	}
+	payload := map[string]interface{}{"records": records}
+	if meta != nil {
+		payload["metadata"] = output.MetadataToMap(meta, opts.MetadataFields)
+	}
+	if opts.EmitTypes {
+		if types := result.GetTypes(); len(types) > 0 {
+			payload["types"] = types
+		}
+	}
+
+	warnings, suggestions := queryNotificationAdvice(query, result.GetNotifications())
+	warnings = append(warnings, approximationWarnings(result)...)
+	scanWarnings, scanSuggestions := heavyScanAdvice(result)
+	warnings = append(warnings, scanWarnings...)
+	suggestions = append(suggestions, scanSuggestions...)
+	emptyReason, emptySuggestions := e.emptyResultAdvice(query, result, records, opts)
+	suggestions = append(suggestions, emptySuggestions...)
+	suggestions = append(suggestions, lookbackAdvice(query)...)
+	suggestions = append(suggestions, sampleAdvice(query, len(records))...)
+	suggestions = append(suggestions, durationAdvice(query, result)...)
+	suggestions = append(suggestions, metaAdvice...)
+	suggestions = append(suggestions, seriesAdvice(opts)...)
+
+	total := len(records)
+	ctx := &output.ResponseContext{
+		Verb:        "query",
+		Resource:    resourceFromQuery(query),
+		Total:       &total,
+		Warnings:    warnings,
+		Suggestions: suggestions,
+		EmptyReason: emptyReason,
+	}
+
+	if opts.Decorate != nil {
+		opts.Decorate(ctx, result, records)
+	}
+
+	// A filter's output has no row structure to cut at, so the budget cannot
+	// drop rows from it; say so rather than silently exceed it.
+	if opts.MaxOutputBytes > 0 {
+		ctx.Warnings = append(ctx.Warnings, "--max-output-bytes/--max-output-tokens are not applied to --jq output; narrow the filter to bound it")
+	}
+
+	ap := output.NewAgentPrinter(e.outW(), ctx)
+	ap.SetJQFilter(opts.JQFilter)
+	// Clipped after the filter ran, so the filter matches on full values.
+	ap.SetMaxFieldChars(opts.MaxFieldChars)
+	// Keep metadata next to `result` as the unfiltered envelope does, so a
+	// filter that narrows down to the rows doesn't silently drop it.
+	ap.SetMetadata(envelopeMetadata(query, result, opts))
+	// -o toon asked for a token-efficient encoding of the filtered result; keep
+	// it. Any other non-JSON format the envelope can't carry warns for itself.
+	// With no -o the result is JSON, not an auto-chosen yaml or csv string.
+	if opts.AutoFormatByDefault {
+		ap.SetResultFormat("json")
+	} else {
+		ap.SetResultFormat(effectiveFormat)
+	}
+	return ap.Print(payload)
 }
 
 // columnTypeMappings flattens the DQL per-column type info from the response
@@ -938,6 +1402,24 @@ func extractQueryMetadata(result *DQLQueryResponse) *output.QueryMetadata {
 		}
 	}
 
+	// Approximations and notifications are carried verbatim, notifications of
+	// every severity: stderr and the envelope warnings show only WARNING and
+	// ERROR, so this block is where an INFO notification can be read at all.
+	// Read through the getters (not g) so the block agrees with what the
+	// stderr and envelope paths report.
+	if approximations := result.GetApproximations(); len(approximations) > 0 {
+		meta.Approximations = append([]string(nil), approximations...)
+	}
+	for _, n := range result.GetNotifications() {
+		meta.Notifications = append(meta.Notifications, output.MetadataNotice{
+			Severity:         n.Severity,
+			NotificationType: n.NotificationType,
+			Message:          n.Message,
+			MessageFormat:    n.MessageFormat,
+			Arguments:        n.Arguments,
+		})
+	}
+
 	for _, m := range metrics {
 		meta.Metrics = append(meta.Metrics, output.MetricInfo{
 			MetricKey:   m.MetricKey,
@@ -963,15 +1445,15 @@ func (e *DQLExecutor) CancelQuery(requestToken string) {
 	defer cancel()
 
 	if err := handler.Cancel(ctx, requestToken); err != nil {
-		fmt.Fprintf(os.Stderr, "\nFailed to cancel query: %v\n", err)
+		fmt.Fprintf(e.errW(), "\nFailed to cancel query: %v\n", err)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "\nQuery cancelled.")
+	fmt.Fprintln(e.errW(), "\nQuery cancelled.")
 }
 
 // ExecuteFromFile executes a DQL query from a file
 func (e *DQLExecutor) ExecuteFromFile(filename string, outputFormat string) error {
-	data, err := vfs.ReadFile(filename)
+	data, err := e.vfsEnv.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}

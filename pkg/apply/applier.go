@@ -12,20 +12,22 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/hook"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/anomalydetector"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/awsconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/azureconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/gcpconnection"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/util/format"
 	"github.com/dynatrace-oss/dtctl/pkg/util/template"
+	"github.com/dynatrace-oss/dtctl/pkg/vfs"
 )
 
 // uuidRegex matches UUID-formatted strings (the Documents API rejects these for ID during creation)
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // stderrWarn writes a note to stderr and appends it to the warnings slice.
-func stderrWarn(warnings *[]string, format string, args ...interface{}) {
+func (a *Applier) stderrWarn(warnings *[]string, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stderr, "Note: %s\n", msg)
+	fmt.Fprintf(a.stderrW(), "Note: %s\n", msg)
 	if warnings != nil {
 		*warnings = append(*warnings, msg)
 	}
@@ -47,6 +49,8 @@ type Applier struct {
 	sourceFile    string    // original filename for hook context
 	hookStdout    io.Writer // where hook stdout is forwarded (nil = os.Stdout)
 	hookStderr    io.Writer // where hook stderr is forwarded (nil = os.Stderr)
+	stderr        io.Writer // where notes, diffs and instructions go (nil = os.Stderr)
+	vfsEnv        vfs.Env   // file access for the id write-back (zero value = the process's)
 }
 
 // NewApplier creates a new applier
@@ -57,6 +61,28 @@ func NewApplier(c *client.Client) *Applier {
 		baseURL:       c.BaseURL(),
 		currentUserID: currentUserID,
 	}
+}
+
+// WithStderr sets where the applier writes its notes, diffs and setup
+// instructions. nil keeps os.Stderr.
+func (a *Applier) WithStderr(w io.Writer) *Applier {
+	a.stderr = w
+	return a
+}
+
+// WithVFS sets the filesystem and stdin the applier's id write-back uses. The
+// zero Env keeps the process's.
+func (a *Applier) WithVFS(env vfs.Env) *Applier {
+	a.vfsEnv = env
+	return a
+}
+
+// stderrW returns the writer for notes, diffs and instructions.
+func (a *Applier) stderrW() io.Writer {
+	if a.stderr == nil {
+		return os.Stderr
+	}
+	return a.stderr
 }
 
 // WithSafetyChecker sets the safety checker for the applier
@@ -158,6 +184,7 @@ type ResourceType string
 
 const (
 	ResourceWorkflow              ResourceType = "workflow"
+	ResourceSchedulingRule        ResourceType = "scheduling-rule"
 	ResourceDashboard             ResourceType = "dashboard"
 	ResourceNotebook              ResourceType = "notebook"
 	ResourceSLO                   ResourceType = "slo"
@@ -343,6 +370,8 @@ func (a *Applier) applySingle(resourceType ResourceType, jsonData []byte, opts A
 	switch resourceType {
 	case ResourceWorkflow:
 		result, err = a.applyWorkflow(jsonData, opts)
+	case ResourceSchedulingRule:
+		result, err = a.applySchedulingRule(jsonData, opts)
 	case ResourceDashboard:
 		result, err = a.applyDocument(jsonData, "dashboard", opts)
 	case ResourceNotebook:
@@ -530,6 +559,15 @@ func detectResourceType(data []byte) (ResourceType, bool, error) {
 		return ResourceWorkflow, false, nil
 	}
 
+	// Scheduling rules are identified by their mandatory ruleType discriminator,
+	// which is unique to this resource and names the body field that follows.
+	if rt, ok := raw["ruleType"].(string); ok {
+		switch rt {
+		case "rrule", "grouping", "fixed_offset", "relative_offset":
+			return ResourceSchedulingRule, false, nil
+		}
+	}
+
 	// Documents have "metadata" or "content" at root level
 	if _, hasMetadata := raw["metadata"]; hasMetadata {
 		// Further distinguish between dashboard, notebook, and custom types
@@ -629,6 +667,35 @@ func detectResourceType(data []byte) (ResourceType, bool, error) {
 		}
 	}
 
+	// A cloud connection exported before the field projection was fixed carries
+	// only objectId and value — the Settings API list used to strip schemaId and
+	// scope — which leaves the authentication type in the value as the
+	// document's only marker. Without this, the flattened "type" field sends
+	// such a file down the generic document path and an apply creates a document
+	// named after the auth type instead of updating the connection.
+	// See https://github.com/dynatrace-oss/dtctl/issues/509
+	if valueMap, ok := raw["value"].(map[string]interface{}); ok {
+		valueType, _ := valueMap["type"].(string)
+		// The hyperscaler connection schemas are discriminated unions: the value
+		// carries "type" *and* a sub-object named after it. Requiring both is
+		// what keeps this fallback from claiming a foreign settings object whose
+		// value merely happens to have a "type" of, say, "clientSecret" — the
+		// connection appliers re-marshal the value through their own struct and
+		// would silently drop every field that struct does not model.
+		if _, hasDiscriminant := valueMap[valueType]; hasDiscriminant {
+			switch valueType {
+			case azureconnection.TypeFederatedIdentityCredential, azureconnection.TypeClientSecret:
+				return ResourceAzureConnection, false, nil
+			case gcpconnection.TypeServiceAccountImpersonation:
+				return ResourceGCPConnection, false, nil
+			case awsconnection.TypeRoleBased:
+				// dtctl has no AWS connection applier: an AWS connection is a plain
+				// Settings object, and the settings path updates it by objectId.
+				return ResourceSettings, false, nil
+			}
+		}
+	}
+
 	// Anomaly Detector detection (flattened format): "analyzer" with "name" subfield + "eventTemplate"
 	if analyzerRaw, hasAnalyzer := raw["analyzer"]; hasAnalyzer {
 		if _, hasEventTemplate := raw["eventTemplate"]; hasEventTemplate {
@@ -695,6 +762,33 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 		return a.dryRunExtensionConfig(doc)
 	}
 
+	// Anomaly detectors are validated against the schema server-side
+	if resourceType == ResourceAnomalyDetector {
+		return a.dryRunAnomalyDetector(data)
+	}
+
+	// Cloud resources resolve create vs update from "objectId" plus a lookup of
+	// the live list by name, so each has its own dry run that repeats exactly
+	// that resolution. See https://github.com/dynatrace-oss/dtctl/issues/509
+	switch resourceType {
+	case ResourceAWSMonitoringConfig:
+		return a.dryRunAWSMonitoringConfig(data)
+	case ResourceAzureMonitoringConfig:
+		return a.dryRunAzureMonitoringConfig(data)
+	case ResourceGCPMonitoringConfig:
+		return a.dryRunGCPMonitoringConfig(data)
+	case ResourceAzureConnection:
+		return a.dryRunAzureConnection(doc)
+	case ResourceGCPConnection:
+		return a.dryRunGCPConnection(doc)
+	case ResourceSettings:
+		// Settings objects (and the legacy AWS connection exports routed here)
+		// resolve create vs update by looking the objectId up, falling back to
+		// a create that needs schemaId and scope. See
+		// https://github.com/dynatrace-oss/dtctl/issues/521
+		return a.dryRunSettings(doc, data)
+	}
+
 	// For other resources, return basic info
 	id, _ := doc["id"].(string)
 	name, _ := doc["name"].(string)
@@ -702,15 +796,13 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 		name, _ = doc["title"].(string)
 	}
 
-	// Settings objects never carry an "id" field — they use "objectId" (camelCase)
-	// or "objectid" (lowercase). Check those fields so that dry-run agrees with
-	// actual apply for settings resources.
-	// See https://github.com/dynatrace-oss/dtctl/issues/256
-	if id == "" && resourceType == ResourceSettings {
-		id, _ = doc["objectId"].(string)
-		if id == "" {
-			id, _ = doc["objectid"].(string)
-		}
+	// Settings-style objects never carry an "id" field — they use "objectId"
+	// (camelCase) or "objectid" (lowercase). Read those so that dry-run agrees
+	// with actual apply for every resource that identifies itself that way, not
+	// just for the "settings" type.
+	// See https://github.com/dynatrace-oss/dtctl/issues/256 and /issues/509
+	if id == "" {
+		id = objectIDFromDoc(doc)
 	}
 
 	action := ActionCreated // assume create unless we can prove otherwise
@@ -726,6 +818,37 @@ func (a *Applier) dryRun(resourceType ResourceType, data []byte, opts ApplyOptio
 			Name:         name,
 		},
 	}, nil
+}
+
+// objectIDFromDoc reads the settings-style object id out of a decoded payload.
+// The field is spelled "objectId" by the API and "objectid" by a YAML
+// round-trip, and neither is ever an "id".
+func objectIDFromDoc(doc map[string]interface{}) string {
+	if id, _ := doc["objectId"].(string); id != "" {
+		return id
+	}
+	id, _ := doc["objectid"].(string)
+	return id
+}
+
+// monitoringConfigDryRun builds the dry-run result for a cloud monitoring
+// config once its apply path's create-vs-update resolution has run: a resolved
+// objectID means the apply issues a PUT.
+func monitoringConfigDryRun(resourceType, objectID, description, scope string, warnings []string) *DryRunResult {
+	action := ActionCreated
+	if objectID != "" {
+		action = ActionUpdated
+	}
+	return &DryRunResult{
+		ApplyResultBase: ApplyResultBase{
+			Action:       action,
+			ResourceType: resourceType,
+			ID:           objectID,
+			Name:         description,
+			Warnings:     warnings,
+		},
+		Scope: scope,
+	}
 }
 
 // capitalize capitalizes the first letter of a string

@@ -43,6 +43,17 @@ _read-only | access: read_
 | whoami | _(none declared)_ |
 
 
+## claim
+
+[Experimental] Claim access to a shared resource
+
+_mutating | access: claim | safety: OperationCreate_
+
+| Resource | Required scopes |
+| --- | --- |
+| environment-share | `document:environment-shares:claim` |
+
+
 ## config
 
 Manage dtctl configuration
@@ -53,9 +64,11 @@ _read-only | access: read_
 | --- | --- |
 | current-context | _(none declared)_ |
 | delete-context | _(none declared)_ |
+| delete-credentials | _(none declared)_ |
 | describe-context | _(none declared)_ |
 | get-contexts | _(none declared)_ |
 | init | _(none declared)_ |
+| list-development | _(none declared)_ |
 | migrate-tokens | _(none declared)_ |
 | set | _(none declared)_ |
 | set-context | _(none declared)_ |
@@ -81,6 +94,7 @@ _mutating | access: write | safety: OperationCreate_
 | extension | `extensions:definitions:write` |
 | lookup | `storage:files:write` |
 | notebook | `document:documents:write` |
+| scheduling-rule | `automation:rules:write` |
 | segment | `storage:filter-segments:write` |
 | settings | `settings:objects:write` |
 | slo | `slo:slos:write` |
@@ -128,6 +142,7 @@ _mutating | access: delete | safety: OperationDelete_
 | lookup | `storage:files:delete` |
 | notebook | `document:documents:delete` |
 | notification | `notification:notifications:write` |
+| scheduling-rule | `automation:rules:write`, `automation:rules:read` |
 | segment | `storage:filter-segments:delete` |
 | settings | `settings:objects:write` |
 | slo | `slo:slos:write` |
@@ -160,14 +175,17 @@ _read-only | access: read_
 | dashboard | `document:documents:read` |
 | document | `document:documents:read` |
 | edgeconnect | `app-engine:edge-connects:read` |
+| environment | `app-engine:apps:run` |
 | extension | `extensions:definitions:read` |
 | extension-config | `extensions:configurations:read` |
 | function | `app-engine:apps:run` |
 | group | `iam:groups:read` |
 | hub-extensions | `hub:catalog:read` |
 | intent | `app-engine:apps:run` |
+| license | `app-engine:apps:run` |
 | lookup | `storage:files:read` |
 | notebook | `document:documents:read` |
+| scheduling-rule | `automation:rules:read` |
 | segment | `storage:filter-segments:read` |
 | settings | `settings:objects:read`, `app-settings:objects:read` |
 | settings-schema | `settings:schemas:read` |
@@ -277,8 +295,8 @@ _mutating | access: run | safety: OperationCreate_
 | analyzer | `davis:analyzers:execute` |
 | api | _(none declared)_ |
 | function | `app-engine:functions:run` |
-| preview-processor | _(none declared)_ |
-| slo | _(none declared)_ |
+| preview-processor | `openpipeline:configurations:read` |
+| slo | `slo:slos:read`, `slo:objective-templates:read` |
 | workflow | `automation:workflows:run` |
 
 Subcommands:
@@ -317,6 +335,7 @@ _read-only | access: read_
 | dashboards | `document:documents:read` |
 | documents | `document:documents:read` |
 | edgeconnects | `app-engine:edge-connects:read` |
+| environment | `app-engine:apps:run` |
 | extension-configs | `extensions:configurations:read` |
 | extensions | `extensions:definitions:read` |
 | functions | `app-engine:apps:run` |
@@ -324,9 +343,12 @@ _read-only | access: read_
 | hub-extension-releases | `hub:catalog:read` |
 | hub-extensions | `hub:catalog:read` |
 | intents | `app-engine:apps:run` |
+| license | `app-engine:apps:run` |
+| license-settings | `app-engine:apps:run` |
 | lookups | `storage:files:read` |
 | notebooks | `document:documents:read` |
 | notifications | `notification:notifications:read` |
+| scheduling-rules | `automation:rules:read` |
 | sdk-versions | `app-engine:apps:run` |
 | segments | `storage:filter-segments:read` |
 | settings | `settings:objects:read`, `app-settings:objects:read` |
@@ -372,9 +394,13 @@ _read-only | access: read_
 
 ## inventory
 
-Probe the environment: which data, entity types, and capabilities exist here
+[Experimental] Probe the environment: which data, entity types, and capabilities exist here
 
 _read-only | access: read_
+
+| Resource | Required scopes |
+| --- | --- |
+| arrivals | `storage:logs:read`, `storage:events:read`, `storage:metrics:read`, `storage:spans:read`, `storage:bizevents:read`, `storage:entities:read`, `storage:smartscape:read`, `storage:system:read`, `storage:security.events:read` |
 
 
 ## logs
@@ -458,13 +484,6 @@ _read-only | access: read_
 | uninstall | _(none declared)_ |
 
 
-## token-scopes
-
-Required token scopes for each safety level
-
-_read-only | access: read_
-
-
 ## translate
 
 Translate expressions between formats
@@ -500,6 +519,8 @@ _mutating | access: write | safety: OperationUpdate_
 | --- | --- |
 | breakpoint | `dev-obs:breakpoints:set` |
 | document | `document:documents:write` |
+| extension | `extensions:definitions:write` |
+| extensions | `extensions:definitions:write` |
 
 Subcommands:
 

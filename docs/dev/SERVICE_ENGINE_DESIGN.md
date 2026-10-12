@@ -1,11 +1,13 @@
 # dtctl as a Service — Engine Design
 
-**Status:** Implemented; `dtctl serve` is experimental and gated behind
-`DTCTL_EXPERIMENTAL_SERVE` (see [Maturity](#maturity))
+**Status:** Implemented; `dtctl serve` is a development-tier feature, registered
+only when opted in (see [Maturity](#maturity))
 **Created:** 2026-08-13
 **Audience:** anyone changing `cmd/`, adding a command, or reading a user-supplied file.
 
 > **Implementation:** `cmd/run.go` (`Run`, `RunOptions`, tree isolation, serialization),
+> `cmd/root_factory.go` and `cmd/invocation.go` (a tree and state per invocation,
+> see [CONCURRENT_EXECUTION.md](CONCURRENT_EXECUTION.md)),
 > `cmd/capabilities.go` (subprocess gate), `cmd/session.go` (per-request tenant),
 > `cmd/stdio.go` (stream redirection), `cmd/blocked.go` (surface mask),
 > `pkg/vfs/` (file seam), `pkg/engine/` (the embedding surface),
@@ -57,8 +59,9 @@ res, err := engine.Execute(ctx, engine.Request{
   belong behind a process or WASM boundary.
 - **Per-request preemption.** A run that has started cannot be killed
   mid-flight; in-process Go code cannot be preempted safely.
-- **Intra-process parallelism.** See "Serialization" below. Scale with more
-  instances or processes.
+- **Intra-process parallelism by default.** Invocations serialize unless the host
+  opts in; see "Serialization" below. Otherwise scale with more instances or
+  processes.
 - **Authentication.** `pkg/serve` has none of its own. A deployment puts its own
   authn/TLS/rate limiting in front, or embeds `pkg/engine` directly.
 
@@ -69,7 +72,7 @@ All are per-invocation and restored afterwards.
 
 | Seam | `RunOptions` field | Default (CLI) | Embedded |
 |---|---|---|---|
-| Command tree | — | pristine per run | same |
+| Command tree | — | pristine per run | same, or a fresh tree per invocation when concurrent |
 | Subprocesses | `Capabilities` | all granted | none granted |
 | Credentials + config | `Session` | host config, contexts, keyring | request's URL + token, host scrubbed |
 | Environment | `Env` | host environment | host + explicit per-request entries |
@@ -91,14 +94,54 @@ Consequences to internalize before "optimizing" this:
 
 - A server handles one dtctl command at a time per process. `dtctl serve http`
   says so in its help text.
-- Parallelism comes from more instances or more processes, never more
-  goroutines.
+- Parallelism comes from more instances or more processes — or from the host
+  opting in to concurrent execution (below) — never from more goroutines against
+  the singleton tree.
 - A server must not be started *inside* an invocation — it would hold the lock
   for its lifetime and deadlock its own first request. This is why `main`
   dispatches `serve` before the command pipeline, and why `dtctl serve http`
   refuses to run when `cmd.RunActive()` reports an invocation in progress.
 
-### Restriction has four independent axes
+### Concurrent execution (opt-in)
+
+`RunOptions.Concurrent`, reached through
+`engine.New(limits, engine.WithConcurrentExecution(n))`, runs an invocation on a
+command tree and state of its own instead of the singleton, so up to `n`
+invocations overlap in one process. Streams, environment, filesystem, session and
+capabilities travel on the invocation's `context.Context` rather than being
+swapped process-wide, and the context is the invocation's only deadline. A process
+runs either one serialized invocation or any number of concurrent ones, never a
+mix. It is off unless a host asks for it; what it guarantees, what it costs and
+what it does not cover are in [CONCURRENT_EXECUTION.md](CONCURRENT_EXECUTION.md).
+
+### Upstream connections are pooled across requests
+
+Every request builds its own client, but all of them send through one
+process-wide `http.Transport` (`sdk/session/transport.go`), so repeated
+requests to a tenant reuse a warm connection instead of paying a TCP + TLS
+handshake each time (#576). That is the one piece of client state a request
+shares, and it holds nothing tenant-specific: the credential is a per-request
+`Authorization` header, there are no client certificates, and net/http keys
+the pool by proxy, scheme and host, so two environments never share a
+connection (and requests that do share one still send their own token).
+The per-client parts — timeout, redirect policy, cookie jar — stay per client.
+
+The transport sits behind a wrapper so resty's in-place mutators
+(`SetProxy`, `SetTLSClientConfig`, `SetCertificates`, …) cannot reach it: on a
+bare shared transport, one client calling them would rewrite TLS trust or the
+proxy for every request in the process. On a session client they cannot apply,
+and they do not fail silently either: every later request on that client
+returns `session.ErrSharedTransportSetting` and sends nothing, so a required
+egress proxy or pinned CA is never quietly dropped. A consumer that needs its
+own TLS or proxy settings installs a private transport first —
+`HTTP().SetTransport(session.NewTransport())` — and then calls the setters.
+`http.Client.CloseIdleConnections` is forwarded to the pool, so it closes idle
+connections for every client; that is harmless, since an idle connection is a
+cache. The proxy itself still comes from
+`HTTPS_PROXY`/`NO_PROXY` as before — read once per process by net/http, so a
+per-request `Env` entry never changed it.
+
+### Restriction has five independent axes
 
 Do not conflate these; each answers a different question.
 
@@ -106,12 +149,45 @@ Do not conflate these; each answers a different question.
 |---|---|---|---|
 | Safety level | What may this command *do* to the tenant? | `pkg/safety` checks | `safety_blocked` |
 | Profile | Which commands *exist* for this caller? | `applyProfile` mask | `profile_blocked` |
+| Stability floor | Which commands *carry a contract* here? | `pkg/stability` mask | `stability_blocked` |
 | Environment | Which commands *make sense* here at all? | `BlockedCommands` mask | `unsupported_in_service` |
 | Capability | Which *host abilities* may this process use? | `cmd.Capabilities` gates | `capability_disabled` |
 
-The masks compose — profile and environment both apply to a run. The
+The masks compose — profile, stability and environment all apply to a run. The
 environment mask additionally guards non-runnable parents, so a blocked
 `config` cannot answer with its own help text and exit 0.
+
+#### The stability floor defaults *stricter* in the engine
+
+`Request.MinStability` defaults to `stable`, not to the CLI's `experimental`
+(`cmd.SessionDefaultMinStability`). The middle tier exists so that a human — or
+an interactive agent showing the human a `[Experimental]` badge — can knowingly
+use surface that may change in any minor release. A request has nobody to show
+the badge to: it is unattended automation, usually against a dtctl version the
+caller did not pin. Defaulting it into the experimental tier would let a minor
+upgrade change a shape the caller's own API had already promised onward.
+
+Two per-request fields widen it, and the second is almost always the right one:
+
+- `MinStability: "experimental"` grants the whole tier, including commands and
+  flags that join it in a later release.
+- `StabilityExceptions: []string{"inventory", "query --decode-snapshots"}`
+  grants exactly what the host has tested. There is no environment variable for
+  exceptions, so this field is the only way to express them in engine mode.
+
+`development` is rejected as a floor value. That tier is gated at
+*registration* — a stage earlier than the floor — and a session offers no
+opt-in for it, so accepting the value would return an `experimental`-sized
+surface to a caller who believed it had asked for more.
+
+`DTCTL_MIN_STABILITY` and `DTCTL_DEVELOPMENT` are in `sessionScrubbedEnvVars`
+for the same reason `DTCTL_PROFILE` is: they decide which commands exist, and
+that is the request's decision, not the host process's. A host that exported
+either one for its own CLI use must not thereby reshape every tenant's surface.
+
+An embedded agent discovers its own floor from `dtctl commands`, which reports
+`min_stability` and omits everything below it — so a block reads as "not
+available to you here", not as "this command does not exist".
 
 ## Rules for contributors
 
@@ -310,33 +386,49 @@ both tags exist.
 `pkg/engine` is the stable half: a Go caller opts into it at compile time, and
 the isolation rules above are enforced by guard tests.
 
-`dtctl serve` is **experimental** and registered only when
-`DTCTL_EXPERIMENTAL_SERVE` is set (the `DTCTL_EXPERIMENTAL_ACCOUNT` convention;
-`serve.Experimental()` and the gate in `main`). Without it the command does not
-exist — no help entry, no catalog entry, an ordinary "unknown command". The gate
-comes off when the items below are settled, because each one changes what an
-operator can rely on:
+`dtctl serve` is **development-tier** (see [STABILITY.md](../STABILITY.md)) and
+registered only when opted into — `dtctl config set development.serve on` or
+`DTCTL_DEVELOPMENT=serve`; `serve.Enabled()` and the gate in `main`. Without it
+the command does not exist — no help entry, no catalog entry, an ordinary
+"unknown command". It graduates to a badged `experimental` command when the
+items below are settled, because each one changes what an operator can rely
+on:
 
-- **No per-request deadline.** A started execution cannot be interrupted, and it
-  holds the single invocation slot. One `wait` with a long timeout, or a `query`
-  against a slow environment, stalls every queued request behind it.
-- **No admission control.** Requests queue on the invocation mutex without a
-  bound; there is no "server busy" answer and no way to shed load.
-- **Unbounded commands are still reachable.** `query --live` never returns on
-  its own. Deciding whether the service surface excludes such commands (as it
-  excludes `inspect`) or the transport imposes deadlines is the open half of the
-  question below.
+- **Per-request deadline, with a caveat.** `engine.Limits.MaxDuration`
+  (`DefaultLimits`: 5 min) wraps the request in a `context.WithTimeout`
+  threaded into the command tree via `RunOptions.Context` /
+  `rootCmd.ExecuteContext`, and most commands cancel cooperatively via
+  `cmd.Context()`. But cancellation is opt-in per command body: one that never
+  checks its context, or issues an HTTP call on a context of its own, still
+  runs to completion and holds the single invocation slot regardless of the
+  budget. `cmd/query.go`'s DQL execution is the tracked exception today (see
+  its own comments); auditing the rest of the tree for the same gap is not
+  done.
+- **Admission control exists, coarsely.** `engine.Limits.MaxQueued`
+  (default 4) bounds how many requests may wait for the slot;
+  `engine.ErrTooManyQueued` is the "server busy" answer, mapped to HTTP 503 by
+  `serve http`. The bound is process-global (a package-level counter), not
+  per engine instance or caller, so two independent callers sharing a process
+  share one queue depth.
+- **Streaming commands are refused, not made safe.** `--watch` (`get`),
+  `--follow` (`logs`), and `--live` (`query`) are blocked outright via the
+  `LongRunningStreams` capability (`capability_disabled`) rather than
+  supported through a different response shape — they would need a streaming
+  transport, which `POST /v1/execute` (buffers the whole output) does not
+  offer. This closes off the "unbounded command reachable" gap for these
+  three flags specifically; it does not audit the full command tree for other
+  potentially-unbounded operations.
 - **Per-invocation tracing cost.** `tracing.Init`/shutdown runs per invocation
   with a 5s flush budget; in a long-lived server that belongs at process scope.
 
 ## Open questions
 
-- **Instance-per-request via WASM.** A spike measured 20–47 ms per-instance
-  overhead, which would remove the serialization constraint and give hard
-  per-request deadlines. Not pursued yet; the current model is
-  process/instance-level scaling.
-- **Cancellation.** The context gates the *start* of an execution only. Hard
-  deadlines need a process or WASM boundary.
-- **Streaming.** `POST /v1/execute` buffers the whole output. Long-running
-  commands (`--watch`, `logs -f`) are unavailable in the service surface; a
-  streaming endpoint would need a different response shape.
+- **Instance-per-request via WASM.** It would remove the serialization constraint
+  and give hard, host-enforced per-request deadlines (rather than the cooperative
+  `cmd.Context()` cancellation above). Measured with wazero, one fresh instance
+  per command and a precompiled module: about 55 ms of CPU to start each
+  instance (against about 12 ms for a native process, and about 3 ms for a command
+  on its own tree in process) and about 35 MiB per in-flight instance with
+  instance memory outside the Go heap, on a roughly 400 MiB per-process
+  baseline; `wasip1` also has no sockets, so every request needs a host-side
+  bridge. Not pursued; see [CONCURRENT_EXECUTION.md](CONCURRENT_EXECUTION.md#costs).

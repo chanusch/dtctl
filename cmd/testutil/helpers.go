@@ -75,11 +75,18 @@ func CreateTempFile(t *testing.T, content string, pattern string) string {
 	return tmpFile.Name()
 }
 
-// ResetCommandFlags resets a command's flags to allow reuse in tests
+// ResetCommandFlags resets a command's flags to allow reuse in tests.
+//
+// Only the command's own flags are reset. Once cobra has merged a parent's
+// persistent flags into cmd.Flags() (any earlier Execute or InheritedFlags
+// call does that), resetting those too would silently clear package state a
+// test set up before the call, such as cfgFile behind --config.
 func ResetCommandFlags(cmd *cobra.Command) {
-	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+	cmd.LocalFlags().VisitAll(func(flag *pflag.Flag) {
 		flag.Changed = false
-		if sv, ok := flag.Value.(pflag.SliceValue); ok {
+		if rv, ok := flag.Value.(interface{ Reset() }); ok {
+			rv.Reset()
+		} else if sv, ok := flag.Value.(pflag.SliceValue); ok {
 			// SliceValue.Set appends rather than replaces; use Replace to restore the
 			// declared default. StringArray stores DefValue as JSON; other slice types
 			// fall back to nil (empty) if the format doesn't parse.

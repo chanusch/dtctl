@@ -19,13 +19,17 @@ func (a *Applier) applyBucket(data []byte) (ApplyResult, error) {
 	// Check if bucket exists
 	existing, err := handler.Get(b.BucketName)
 	if err != nil {
+		if lookupErr := lookupError("bucket", b.BucketName, err); lookupErr != nil {
+			return nil, lookupErr
+		}
+
 		// Bucket doesn't exist, create it
 		result, err := handler.Create(b)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %w", err)
 		}
 		var warnings []string
-		stderrWarn(&warnings, "Bucket creation can take up to 1 minute to complete")
+		a.stderrWarn(&warnings, "Bucket creation can take up to 1 minute to complete")
 		return &BucketApplyResult{
 			ApplyResultBase: ApplyResultBase{
 				Action:       ActionCreated,

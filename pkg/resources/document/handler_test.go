@@ -490,6 +490,53 @@ func TestListEnvironmentShares_FiltersByDocumentID(t *testing.T) {
 	}
 }
 
+func TestClaimEnvironmentShare(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/document/v1/environment-shares/share-1/claim", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"documentId":"doc-1","documentType":"notebook","access":["read"]}`)
+	})
+	h, cleanup := newDocTestHandler(t, mux)
+	defer cleanup()
+
+	got, err := h.ClaimEnvironmentShare("share-1")
+	if err != nil {
+		t.Fatalf("ClaimEnvironmentShare: %v", err)
+	}
+	if got.DocumentID != "doc-1" || got.DocumentType != "notebook" {
+		t.Errorf("unexpected result: %+v", got)
+	}
+}
+
+func TestParseShareRef(t *testing.T) {
+	tests := []struct {
+		in, id, host string
+		wantErr      bool
+	}{
+		{in: "abc-123", id: "abc-123"},
+		{in: " abc-123\n", id: "abc-123"},
+		{in: "https://env.apps.example.invalid/ui/document/v0/#share=abc-123", id: "abc-123", host: "env.apps.example.invalid"},
+		{in: "https://env.apps.example.invalid/ui/document/v0/#share=abc-123&x=1", id: "abc-123", host: "env.apps.example.invalid"},
+		{in: "https://ENV.apps.example.invalid:443/ui/document/v0/#share=abc-123", id: "abc-123", host: "env.apps.example.invalid"},
+		{in: "", wantErr: true},
+		{in: "https://env.apps.example.invalid/#share=", wantErr: true},
+		{in: "a/b", wantErr: true},
+	}
+	for _, tt := range tests {
+		id, host, err := ParseShareRef(tt.in)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ParseShareRef(%q) err = %v, wantErr %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		if id != tt.id || host != tt.host {
+			t.Errorf("ParseShareRef(%q) = %q, %q; want %q, %q", tt.in, id, host, tt.id, tt.host)
+		}
+	}
+}
+
 func TestEnsureEnvironmentShare_AlreadyExists_NoOp(t *testing.T) {
 	createCalls := 0
 	patchCalls := 0

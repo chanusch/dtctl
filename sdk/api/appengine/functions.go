@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/go-resty/resty/v2"
 
@@ -19,12 +20,6 @@ type FunctionHandler struct {
 func NewFunctionHandler(c *httpclient.Client) *FunctionHandler {
 	return &FunctionHandler{client: c}
 }
-
-// App Engine non-standard HTTP status codes.
-const (
-	statusJSError     = 540
-	statusSyntaxError = 541
-)
 
 // FunctionInvokeRequest represents a function invocation request
 type FunctionInvokeRequest struct {
@@ -78,10 +73,24 @@ type SDKVersionsResponse struct {
 	Versions []SDKVersion `json:"versions"`
 }
 
+// escapeFunctionName escapes a function name for the "/api/" portion of an
+// invoke path. Unlike every other id dtctl interpolates, a function name is a
+// path by design: parseFullFunctionName splits "app-id/a/b/c" at the first
+// slash only, so "a/b/c" is the name and its slashes are real separators.
+// httpclient.PathSegment on the whole name would turn them into "%2F" and address a
+// function that does not exist, so each part is escaped on its own.
+func escapeFunctionName(name string) string {
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		parts[i] = httpclient.PathSegment(part)
+	}
+	return strings.Join(parts, "/")
+}
+
 // InvokeFunction invokes an app function
 func (h *FunctionHandler) InvokeFunction(ctx context.Context, req *FunctionInvokeRequest) (*FunctionInvokeResponse, error) {
-	url := fmt.Sprintf("/platform/app-engine/app-functions/v1/apps/%s/api/%s",
-		req.AppID, req.FunctionName)
+	reqPath := fmt.Sprintf("/platform/app-engine/app-functions/v1/apps/%s/api/%s",
+		httpclient.PathSegment(req.AppID), escapeFunctionName(req.FunctionName))
 
 	httpReq := h.client.HTTP().R().SetContext(ctx)
 
@@ -98,15 +107,15 @@ func (h *FunctionHandler) InvokeFunction(ctx context.Context, req *FunctionInvok
 
 	switch req.Method {
 	case "GET":
-		resp, err = httpReq.Get(url)
+		resp, err = httpReq.Get(reqPath)
 	case "POST":
-		resp, err = httpReq.Post(url)
+		resp, err = httpReq.Post(reqPath)
 	case "PUT":
-		resp, err = httpReq.Put(url)
+		resp, err = httpReq.Put(reqPath)
 	case "PATCH":
-		resp, err = httpReq.Patch(url)
+		resp, err = httpReq.Patch(reqPath)
 	case "DELETE":
-		resp, err = httpReq.Delete(url)
+		resp, err = httpReq.Delete(reqPath)
 	default:
 		return nil, fmt.Errorf("unsupported HTTP method: %s", req.Method)
 	}
@@ -115,13 +124,11 @@ func (h *FunctionHandler) InvokeFunction(ctx context.Context, req *FunctionInvok
 		return nil, fmt.Errorf("invoke function: %w", err)
 	}
 
-	// Handle non-standard status codes from App Engine before CheckResponse
+	// A failure in the submitted code, reported before CheckResponse can read the
+	// non-standard status as an HTTP failure.
 	if resp.IsError() {
-		switch resp.StatusCode() {
-		case statusJSError:
-			return nil, httpclient.NewAPIError(statusJSError, "JavaScript error occurred", resp.String())
-		case statusSyntaxError:
-			return nil, httpclient.NewAPIError(statusSyntaxError, "runtime error occurred", resp.String())
+		if execErr := newExecutionError(resp.StatusCode(), resp.String()); execErr != nil {
+			return nil, execErr
 		}
 	}
 
@@ -191,13 +198,11 @@ func (h *FunctionHandler) ExecuteCode(ctx context.Context, sourceCode, payload s
 		return nil, fmt.Errorf("execute code: %w", err)
 	}
 
-	// Handle non-standard status codes from App Engine before CheckResponse
+	// A failure in the submitted code, reported before CheckResponse can read the
+	// non-standard status as an HTTP failure.
 	if resp.IsError() {
-		switch resp.StatusCode() {
-		case statusJSError:
-			return nil, httpclient.NewAPIError(statusJSError, "JavaScript error occurred", resp.String())
-		case statusSyntaxError:
-			return nil, httpclient.NewAPIError(statusSyntaxError, "runtime error occurred", resp.String())
+		if execErr := newExecutionError(resp.StatusCode(), resp.String()); execErr != nil {
+			return nil, execErr
 		}
 	}
 

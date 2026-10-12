@@ -12,14 +12,15 @@ This document tracks the current implementation status of dtctl. For future plan
 
 ### Core Infrastructure
 - [x] Go module with Cobra CLI framework
-- [x] **SDK module** (`sdk/`): Separate Go module (`github.com/dynatrace-oss/dtctl/sdk`) with typed API wrappers for 15 Dynatrace APIs, shared HTTP client, auth, URL handling, and credential storage. CLI resource handlers delegate to SDK.
+- [x] **SDK module** (`sdk/`): Separate Go module (`github.com/dynatrace-oss/dtctl/sdk`) with typed API wrappers for 24 Dynatrace APIs, shared HTTP client, auth, URL handling, and credential storage. CLI resource handlers delegate to SDK.
 - [x] Configuration management (YAML config, contexts, token storage)
 - [x] Context safety levels (readonly, readwrite-mine, readwrite-all, dangerously-unrestricted)
 - [x] HTTP client with retry, rate limiting, error handling
 - [x] Output formatters: JSON, YAML, table, wide, CSV, chart, sparkline, barchart
-- [x] Global flags: `--context`, `--output`, `--verbose`, `--debug`, `--dry-run`, `--chunk-size`, `--show-diff`, `--agent`, `--no-agent`
+- [x] Global flags: `--context`, `--output`, `--verbose`, `--debug`, `--chunk-size`, `--show-diff`, `--agent`, `--no-agent`
 - [x] Shell completion (bash, zsh, fish)
 - [x] Automatic pagination with `--chunk-size` (default 500)
+- [x] List shaping on every `get` list verb: `--limit N` and `--fields a,b.c` (experimental; nested paths flattened into columns for table/csv/toon)
 - [x] User identity: `dtctl auth whoami` (via metadata API with JWT fallback)
 - [x] OS keychain integration for secure token storage
 - [x] Command aliases: simple, parameterized ($1-$9), and shell aliases (with import/export)
@@ -52,14 +53,16 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] `history` - Show version history (snapshots)
 - [x] `restore` - Restore to previous version
 - [x] `share/unshare` - Share dashboards and notebooks
+- [x] `claim environment-share` - Claim an environment share by ID or `#share=` URL; returns the document ID/type/access (experimental)
 - [x] `alias` - Manage command aliases (set, list, delete, import, export)
 - [x] `ctx` - Quick context management (list, switch, describe, set, delete)
 - [x] `doctor` - Health check (config, context, token, connectivity, auth)
 - [x] `inventory` - Environment data inventory: fetchable data objects, buckets, entity census, capabilities present/absent with evidence; customizable via `--definitions`
+- [x] `inventory arrivals --scope <dql-filter>` - Onboarding verification: per-signal ingest state (live/stale/empty/no-data/n-a/absent/unknown) with counts and last-seen for one scope over a window (`--since`, default 15m); `--require` turns it into a CI gate (exit 10 not live, 11 no verdict) (see `docs/dev/ONBOARDING_VERIFICATION_DESIGN.md`)
 - [x] `commands` - Machine-readable command catalog (JSON/YAML, `--brief`, resource filter, `howto` subcommand)
 - [x] `skills` - AI agent skill file management (install, uninstall, status for Claude, Codex, Copilot, Cursor, Kiro, Junie, OpenCode, OpenClaw; cross-client via `--cross-client`)
 - [x] `plugin` - kubectl-style exec plugins: unknown commands dispatch to `dtctl-<name>` binaries on PATH (`plugin list`, catalog integration; see [PLUGIN_CONVENTIONS.md](PLUGIN_CONVENTIONS.md))
-- [x] `serve` (experimental, gated behind `DTCTL_EXPERIMENTAL_SERVE`) - Run dtctl as a server instead of a one-shot CLI, one subcommand per protocol: `serve http` (`POST /v1/execute`, `GET /healthz`, `--addr` default `127.0.0.1:7211`). Reference implementation over `pkg/engine`; see [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md)
+- [x] `serve` (development-tier, opt in with `dtctl config set development.serve on`) - Run dtctl as a server instead of a one-shot CLI, one subcommand per protocol: `serve http` (`POST /v1/execute`, `GET /healthz`, `--addr` default `127.0.0.1:7211`). Reference implementation over `pkg/engine`; see [SERVICE_ENGINE_DESIGN.md](SERVICE_ENGINE_DESIGN.md)
 
 ### Resources
 
@@ -69,6 +72,7 @@ This document tracks the current implementation status of dtctl. For future plan
 |----------|-----|----------|--------|--------|------|-------|
 | workflow | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | execution | ✅ | ✅ | - | - | - | - |
+| scheduling-rule | ✅ | ✅ | ✅ | ✅ | - | ✅ |
 | document | ✅ | ✅ | ✅ | ✅ | ✅ | - |
 | dashboard | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notebook | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -85,18 +89,22 @@ This document tracks the current implementation status of dtctl. For future plan
 | analyzer | ✅ | ✅ | - | - | - | - |
 | copilot | ✅ | - | - | - | - | - |
 | lookup | ✅ | ✅ | ✅ | ✅ | - | ✅ |
-| extension | ✅ | ✅ | ✅ | - | - | - |
+| extension | ✅ | ✅ | ✅ | - | ✅ | - |
 | extension-config | ✅ | ✅ | - | - | - | ✅ |
 | intent | ✅ | ✅ | - | - | - | - |
 | segment | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | anomaly-detector | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | api | ✅ | ✅ | - | - | - | - |
+| environment | ✅ | ✅ | - | - | - | - |
+| license | ✅ | ✅ | - | - | - | - |
+| license-settings | ✅ | - | - | - | - | - |
 
 #### Account Management
 
 | Resource | list | create | revoke |
 |----------|------|--------|--------|
 | token (account) | ✅ | ✅ | ✅ |
+| service-user (account) | ✅ | ✅ | ✅ |
 
 #### Cloud Connections
 
@@ -179,9 +187,11 @@ This document tracks the current implementation status of dtctl. For future plan
 - [x] Live progress bar on stderr for long queries (scan volume, records, elapsed), on by default, opt out with `--no-progress`
 - [x] Query metadata output: `--metadata` / `-M` with field selection
 - [x] Spill large results to a local file with a summary envelope: `--spill[=auto|always|never]`, `--spill-to`, `--spill-format`, `--spill-threshold`
+- [x] Agent-mode inline output bounds: per-value cap `--max-field-chars` (default 500 in agent mode) and an envelope budget `--max-output-bytes` / `--max-output-tokens` measured on the printed encoding, with `context.truncated` / `returned` / `next_offset` / `next`
 - [x] Local inspection of a spilled file (no Grail re-query): `dtctl inspect <file> --head/--tail/--page/--fields/--schema/--stats/--sample`
 - [x] Full-file predicate filtering via a streaming `--jq` program (per record over the whole file, re-spill-guarded): `dtctl inspect <file> --jq 'select(.status == 500)'`
 - [x] Recover a lost file handle by listing spilled files in the active context: `dtctl inspect --list`
+- [x] Compact timeseries output (experimental): `--series=summary` (per-series stats, sparkline, level-shift hint), `--series=downsample:N` (extreme-preserving), `--precision N` (significant-digit rounding); agent mode defaults to `--series=summary --precision 4`
 
 ### SLO Features
 - [x] List SLOs: `dtctl get slos`
@@ -368,7 +378,7 @@ This document tracks the current implementation status of dtctl. For future plan
 ## Future Planned Features 🔮
 
 See [FUTURE_FEATURES.md](FUTURE_FEATURES.md) for the complete implementation plan including:
-- Platform Management (environment info, license)
+- ~~Platform Management (environment info, license)~~ → Implemented (`environment`, `license`, `license-settings`)
 - State Management for Apps
 - ~~Grail Filter Segments~~ → Implemented (see `segment` resource)
 - Grail Fieldsets

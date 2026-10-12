@@ -38,11 +38,13 @@ dtctl wait query "fetch spans | filter test_id='test-123'" --for=count=1 --timeo
 dtctl query "timeseries avg(dt.host.cpu.usage)" -o chart --plain
 ```
 
+Billable `fetch` (logs, events, bizevents, spans) bills by bytes scanned and dashboard tiles re-bill on every refresh — read "Scan Cost" in `references/DQL-reference.md` before emitting DQL, and treat a PARTIAL or sampled result as incomplete.
+
 dtctl not installed/working? See [references/troubleshooting.md](references/troubleshooting.md).
 
 ## Resources & verbs
 
-Resources and aliases are discoverable via `dtctl commands` (run at init). They include: analyzer, anomaly-detector, app, aws/azure/gcp connection & monitoring, bucket, copilot-skill, dashboard, document, edgeconnect, extension, extension-config, function, group, intent, lookup, notebook, notification, sdk-version, segment, settings, settings-schema, slo, slo-template, trash, user, workflow, workflow-execution. **Use IDs, not names** — names may be ambiguous and fail.
+Resources and aliases are discoverable via `dtctl commands` (run at init). They include: analyzer, anomaly-detector, app, aws/azure/gcp connection & monitoring, bucket, copilot-skill, dashboard, document, edgeconnect, environment, extension, extension-config, function, group, intent, license, license-settings, lookup, notebook, notification, sdk-version, segment, settings, settings-schema, slo, slo-template, trash, user, workflow, workflow-execution. **Use IDs, not names** — names may be ambiguous and fail.
 
 | Verb | Example |
 |------|---------|
@@ -71,7 +73,7 @@ Davis analyzers: before running one, `dtctl describe analyzer <id>` shows its re
 --jq '.[].id'    # filter structured output (json|yaml|toon; other formats auto-promote to json)
 ```
 
-Prefer `--agent` plus `-o toon` and `--jq` to cut tokens.
+Prefer `--agent` plus `-o toon` and `--jq` to cut tokens. Agent-mode `query` trims metadata to cost/sampling fields by default; `-M=all` for the full block.
 
 ### Query results: branch on `result.kind`
 
@@ -91,6 +93,8 @@ dtctl query "fetch logs" --spill=never               # force every row inline
 dtctl query "fetch logs" --spill-to ./out.jsonl      # explicit path: jsonl|json|csv|parquet
 dtctl query "fetch logs" --spill=auto --spill-threshold 100KB
 ```
+
+Inline results are bounded too. String values are clipped to 500 chars by default and end in `…(+N chars)` (`--max-field-chars 0` gives full values; add `| fields <col>` to fetch only that column). `--max-output-tokens N` / `--max-output-bytes SIZE` returns only the rows that fit. When `context.truncated` is true the result is incomplete: `truncated_fields` lists the clipped fields, and `returned` < `total` means rows were dropped. In that case run `context.next` (a `dtctl inspect` command) to continue at `next_offset` without re-querying.
 
 ### Inspect a spilled file (no Grail re-query)
 
@@ -153,6 +157,23 @@ Gotchas: set `davis.enabled: false` on data tiles; `makeTimeseries` for log/span
 - Verify before mutating: `dtctl auth can-i <verb> <resource>`. Scopes: [TOKEN_SCOPES.md](https://github.com/dynatrace-oss/dtctl/blob/main/docs/TOKEN_SCOPES.md).
 - Destructive ops may be blocked by safety level — switch with `dtctl config use-context <name>`, or raise the level when creating the context.
 - Prefer `get`/`describe` first; `--mine` scopes to resources you own; `--plain` for all machine consumption.
+
+## Credentials & teardown
+
+Credentials are dtctl's business: read and remove them only through dtctl.
+
+```bash
+dtctl config delete-context <name> --delete-credentials  # context + its credential
+dtctl config delete-credentials <token-ref>              # credential alone (shared, or context already gone)
+dtctl auth status --plain                                # presence check — never prints the token
+```
+
+**Never invoke OS keychain tooling** — `security` (macOS), `secret-tool`
+(Linux), `cmdkey` (Windows) — for any purpose, cleanup included. Their delete
+verbs miss most of what a credential occupies; their read verbs print secrets,
+and `security dump-keychain` covers *every* keychain on the machine, not just
+dtctl's. **Never verify a deletion by reading the secret back** — a teardown
+step that prints a token has leaked exactly what it was told to destroy.
 
 ## More
 

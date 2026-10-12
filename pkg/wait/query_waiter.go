@@ -11,6 +11,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
 )
 
 // WaitConfig configures the wait operation
@@ -24,7 +25,8 @@ type WaitConfig struct {
 	OutputFormat string
 	Quiet        bool
 	Verbose      bool
-	ProgressOut  io.Writer // Where to write progress messages (default: stderr)
+	ProgressOut  io.Writer // Where to write progress messages (default: os.Stderr, even if Out is set)
+	Out          io.Writer // Where PrintResults writes (default: os.Stdout); progress goes to ProgressOut
 }
 
 // QueryWaiter polls a query until a condition is met
@@ -132,7 +134,16 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 		}
 
 		// Execute query
-		result, err := w.executor.ExecuteQueryWithOptions(w.config.Query, w.config.QueryOptions)
+		// Bound to ctx, so the --timeout deadline (or an embedding caller going
+		// away) cancels the in-flight query instead of only the next attempt.
+		result, err := w.executor.ExecuteQueryWithContext(ctx, w.config.Query, w.config.QueryOptions)
+		if err == nil && result == nil {
+			// ExecuteQueryWithContext reports a cancelled context as (nil, nil).
+			err = context.Canceled
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+			}
+		}
 		if err != nil {
 			// Query execution error - retry unless context cancelled
 			if ctx.Err() != nil {
@@ -256,7 +267,19 @@ func (w *QueryWaiter) Wait(ctx context.Context) (*Result, error) {
 // (request timeout) and 429 (too many requests) are the transient exceptions
 // and remain retryable. Non-QueryError failures (network blips, 5xx) are
 // treated as transient.
+//
+// A FAILED state is permanent for the same reason: the backend ran the query
+// and it failed, so the identical query will fail again. The other state
+// errors stay retryable on purpose — an expired result (HTTP 410) is fixed by
+// exactly the re-run this waiter is about to do, a server-side cancellation
+// says nothing about the query itself, and an unrecognized state that outlived
+// the poll deadline may still be running on the backend.
 func isPermanentQueryError(err error) bool {
+	var stateErr *exec.QueryStateError
+	if errors.As(err, &stateErr) {
+		return stateErr.State == sdkquery.StateFailed && !stateErr.TimedOut
+	}
+
 	var qErr *exec.QueryError
 	if !errors.As(err, &qErr) {
 		return false
@@ -274,7 +297,7 @@ func (w *QueryWaiter) PrintResults(result *Result) error {
 		return nil
 	}
 
-	printer := output.NewPrinter(w.config.OutputFormat)
+	printer := output.NewPrinterWithOpts(output.PrinterOptions{Format: w.config.OutputFormat, Writer: w.config.Out})
 	if w.config.OutputFormat == "table" {
 		if len(result.Records) == 0 {
 			return nil

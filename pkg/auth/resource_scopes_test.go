@@ -12,10 +12,11 @@ import (
 // preserving: login must request exactly the same scopes as before. Update this
 // table only with an intentional, reviewed change to login behavior.
 var baselineScopes = map[config.SafetyLevel][]string{
-	config.SafetyLevelReadOnly: { // 40 scopes
+	config.SafetyLevelReadOnly: { // 41 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
+		"automation:rules:read",
 		"document:documents:read",
 		"document:direct-shares:read",
 		"document:trash.documents:read",
@@ -54,10 +55,11 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"hub:catalog:read",
 		"openpipeline:configurations:read",
 	},
-	config.SafetyLevelReadWriteMine: { // 53 scopes
+	config.SafetyLevelReadWriteMine: { // 56 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
+		"automation:rules:read",
 		"document:documents:read",
 		"document:direct-shares:read",
 		"document:trash.documents:read",
@@ -96,6 +98,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"document:trash.documents:restore",
 		"automation:workflows:write",
 		"automation:workflows:run",
+		"automation:rules:write",
 		"slo:slos:write",
 		"settings:objects:write",
 		"extensions:definitions:write",
@@ -106,13 +109,15 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"davis:analyzers:execute",
 		"davis-copilot:conversations:execute",
 		"app-engine:functions:run",
+		"document:environment-shares:claim",
 		"email:emails:send",
 		"dev-obs:breakpoints:set",
 	},
-	config.SafetyLevelReadWriteAll: { // 72 scopes
+	config.SafetyLevelReadWriteAll: { // 76 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
+		"automation:rules:read",
 		"document:documents:read",
 		"document:direct-shares:read",
 		"document:trash.documents:read",
@@ -157,6 +162,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"document:trash.documents:restore",
 		"automation:workflows:write",
 		"automation:workflows:run",
+		"automation:rules:write",
 		"slo:slos:write",
 		"settings:objects:write",
 		"extensions:definitions:write",
@@ -171,6 +177,8 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"dev-obs:breakpoints:set",
 		"document:environment-shares:read",
 		"document:environment-shares:write",
+		"document:environment-shares:claim",
+		"document:documents:admin",
 		"storage:logs:write",
 		"storage:events:write",
 		"storage:metrics:write",
@@ -183,10 +191,11 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"app-engine:edge-connects:write",
 		"notification:notifications:write",
 	},
-	config.SafetyLevelDangerouslyUnrestricted: { // 80 scopes
+	config.SafetyLevelDangerouslyUnrestricted: { // 84 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
+		"automation:rules:read",
 		"document:documents:read",
 		"document:environment-shares:read",
 		"document:trash.documents:read",
@@ -227,10 +236,13 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"document:documents:write",
 		"document:documents:delete",
 		"document:environment-shares:write",
+		"document:environment-shares:claim",
+		"document:documents:admin",
 		"document:trash.documents:restore",
 		"document:trash.documents:delete",
 		"automation:workflows:write",
 		"automation:workflows:run",
+		"automation:rules:write",
 		"slo:slos:write",
 		"settings:objects:write",
 		"extensions:definitions:write",
@@ -318,7 +330,7 @@ func TestRequiredScopesMatchSafetyLevels(t *testing.T) {
 	union := asSet(GetScopesForSafetyLevel(config.SafetyLevelDangerouslyUnrestricted))
 
 	for resource, as := range ResourceScopes {
-		for _, access := range []Access{AccessRead, AccessWrite, AccessDelete, AccessRun} {
+		for _, access := range []Access{AccessRead, AccessWrite, AccessDelete, AccessRun, AccessClaim} {
 			for _, scope := range as.For(access) {
 				if !union[scope] {
 					t.Errorf("ResourceScopes[%q].%s scope %q is not granted by any safety level", resource, access, scope)
@@ -342,6 +354,7 @@ func TestAccessForVerb(t *testing.T) {
 		want     Access
 	}{
 		{"get", "", AccessRead},
+		{"claim", "OperationCreate", AccessClaim},
 		{"describe", "", AccessRead},
 		{"query", "", AccessRead},
 		{"create", "OperationCreate", AccessWrite},

@@ -1,16 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
 
 func TestDownloadExtensionValidation(t *testing.T) {
-	origAgentMode := agentMode
-	origOutputFormat := outputFormat
+	origAgentMode := agentMode(context.Background())
+	origOutputFormat := outputFormat(context.Background())
 	defer func() {
-		agentMode = origAgentMode
-		outputFormat = origOutputFormat
+		gFlags.agentMode = origAgentMode
+		gFlags.outputFormat = origOutputFormat
 	}()
 
 	tests := []struct {
@@ -22,7 +23,7 @@ func TestDownloadExtensionValidation(t *testing.T) {
 		{
 			name:    "requires version",
 			args:    []string{"download", "extension", "com.dynatrace.extension.postgres"},
-			wantErr: "--version is required",
+			wantErr: `required flag(s) "version" not set`,
 		},
 		{
 			name:    "rejects output flag",
@@ -39,8 +40,8 @@ func TestDownloadExtensionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			agentMode = tt.agentMode
-			outputFormat = "table"
+			gFlags.agentMode = tt.agentMode
+			gFlags.outputFormat = "table"
 
 			rootCmd.SetArgs(tt.args)
 			err := rootCmd.Execute()

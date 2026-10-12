@@ -6,11 +6,23 @@ import (
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
+	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
 
 const (
 	SchemaID    = "builtin:hyperscaler-authentication.connections.azure"
 	SettingsAPI = "/platform/classic/environment-api/v2/settings/objects"
+
+	// listFields is the field projection a re-appliable export needs. The
+	// Settings API list defaults to objectId + value only, which strips the
+	// schemaId and scope that apply reads to tell a connection document from a
+	// custom document. See https://github.com/dynatrace-oss/dtctl/issues/509
+	listFields = "objectId,schemaId,schemaVersion,scope,value"
+
+	// The authentication types the Azure connection schema accepts.
+	TypeFederatedIdentityCredential = "federatedIdentityCredential"
+	TypeClientSecret                = "clientSecret"
 )
 
 // TokenIssuerForHost returns the Dynatrace token issuer URL for a given tenant host.
@@ -102,11 +114,20 @@ type ListResponse struct {
 func (h *Handler) Get(id string) (*AzureConnection, error) {
 	var result AzureConnection
 	req := h.client.HTTP().R().SetResult(&result)
-	resp, err := req.Get(fmt.Sprintf("%s/%s", SettingsAPI, id))
+	resp, err := req.Get(fmt.Sprintf("%s/%s", SettingsAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return nil, err
 	}
 	if resp.IsError() {
+		if resp.StatusCode() == 403 {
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("get azure_connection %q", id),
+				Permission:     "settings:objects:read",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
+		}
 		return nil, fmt.Errorf("failed to get azure_connection: %s", resp.String())
 	}
 
@@ -129,7 +150,7 @@ func (h *Handler) List() ([]AzureConnection, error) {
 			Style:        client.PaginationSettingsAPI,
 			PageKeyParam: "nextPageKey",
 			NextPageKey:  nextPageKey,
-			Filters:      map[string]string{"schemaIds": SchemaID},
+			Filters:      map[string]string{"schemaIds": SchemaID, "fields": listFields},
 		}.Apply(req)
 
 		resp, err := req.Get(SettingsAPI)
@@ -137,6 +158,14 @@ func (h *Handler) List() ([]AzureConnection, error) {
 			return nil, err
 		}
 		if resp.IsError() {
+			if resp.StatusCode() == 403 {
+				return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+					Operation:  "list azure_connections",
+					Permission: "settings:objects:read",
+					SchemaID:   SchemaID,
+					Body:       resp.String(),
+				})
+			}
 			return nil, fmt.Errorf("failed to list azure_connections: %s", resp.String())
 		}
 
@@ -156,11 +185,20 @@ func (h *Handler) List() ([]AzureConnection, error) {
 
 // Delete deletes an Azure connection by ID
 func (h *Handler) Delete(id string) error {
-	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", SettingsAPI, id))
+	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", SettingsAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return err
 	}
 	if resp.IsError() {
+		if resp.StatusCode() == 403 {
+			return diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("delete azure_connection %q", id),
+				Permission:     "settings:objects:write",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
+		}
 		return fmt.Errorf("failed to delete azure_connection: status %d: %s", resp.StatusCode(), resp.String())
 	}
 	return nil
@@ -241,7 +279,12 @@ func (h *Handler) Create(req AzureConnectionCreate) (*AzureConnection, error) {
 		case 400:
 			return nil, fmt.Errorf("invalid azure_connection: %s", resp.String())
 		case 403:
-			return nil, fmt.Errorf("access denied to create azure_connection")
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:  "create azure_connection",
+				Permission: "settings:objects:write",
+				SchemaID:   req.SchemaID,
+				Body:       resp.String(),
+			})
 		case 404:
 			return nil, fmt.Errorf("schema %q not found", req.SchemaID)
 		case 409:
@@ -284,7 +327,7 @@ func (h *Handler) Update(objectID string, value Value) (*AzureConnection, error)
 	resp, err := h.client.HTTP().R().
 		SetBody(body).
 		SetHeader("If-Match", obj.SchemaVersion).
-		Put(fmt.Sprintf("%s/%s", SettingsAPI, objectID))
+		Put(fmt.Sprintf("%s/%s", SettingsAPI, httpclient.PathSegment(objectID)))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update azure_connection: %w", err)
@@ -295,7 +338,13 @@ func (h *Handler) Update(objectID string, value Value) (*AzureConnection, error)
 		case 400:
 			return nil, fmt.Errorf("invalid azure_connection: %s", resp.String())
 		case 403:
-			return nil, fmt.Errorf("access denied to update azure_connection %q", objectID)
+			return nil, diagnostic.SettingsForbidden(diagnostic.SettingsDenial{
+				Operation:      fmt.Sprintf("update azure_connection %q", objectID),
+				Permission:     "settings:objects:write",
+				SchemaID:       SchemaID,
+				Body:           resp.String(),
+				ExistingObject: true,
+			})
 		case 404:
 			return nil, fmt.Errorf("azure_connection %q not found", objectID)
 		case 409, 412:

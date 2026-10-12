@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,11 +16,35 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/livedebugger"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
+// liveDebuggerSince is the dtctl version at which the Live Debugger surface
+// entered the experimental tier. One constant rather than six literals, so a
+// promotion cannot half-land.
+const liveDebuggerSince = "0.39.0"
+
+// markLiveDebuggerExperimental declares one Live Debugger command
+// `experimental`, and carries the reason for the whole family.
+//
+// The surface is driven by the Live Debugger API, whose breakpoint and
+// snapshot payload shapes are still moving, and dtctl's own decoding of those
+// payloads (pkg/proto/livedebugger) is derived from them — so the CLI cannot
+// promise a shape it does not control. `query --decode-snapshots` is marked as
+// a flag rather than a command for the same reason: `query` itself is stable,
+// only the decoding is not.
+//
+// Every command calls this for itself, next to where it is declared: the tier
+// is an annotation on the command, not an entry in a table that has to be kept
+// in step with one. Promote the family when the Live Debugger API's payload
+// contract is settled.
+func markLiveDebuggerExperimental(cmd *cobra.Command) {
+	stability.Mark(cmd, stability.Experimental, liveDebuggerSince)
+}
+
 type liveDebuggerDeps struct {
-	loadConfig             func() (*config.Config, error)
-	newClient              func(*config.Config) (*client.Client, error)
+	loadConfig             func(context.Context) (*config.Config, error)
+	newClient              func(context.Context, *config.Config) (*client.Client, error)
 	newHandler             func(*client.Client, string) (*livedebugger.Handler, error)
 	getOrCreateWorkspace   func(*livedebugger.Handler, string) (map[string]interface{}, string, error)
 	getWorkspaceRules      func(*livedebugger.Handler, string) (map[string]interface{}, error)
@@ -28,8 +53,8 @@ type liveDebuggerDeps struct {
 
 func defaultLiveDebuggerDeps() liveDebuggerDeps {
 	return liveDebuggerDeps{
-		loadConfig: LoadConfig,
-		newClient:  NewClientFromConfig,
+		loadConfig: loadConfig,
+		newClient:  newClientFromConfig,
 		newHandler: livedebugger.NewHandler,
 		getOrCreateWorkspace: func(handler *livedebugger.Handler, projectPath string) (map[string]interface{}, string, error) {
 			return handler.GetOrCreateWorkspace(projectPath)
@@ -56,9 +81,9 @@ func runGetBreakpoints(cmd *cobra.Command, args []string) error {
 }
 
 func runGetBreakpointsWithDeps(cmd *cobra.Command, args []string, deps liveDebuggerDeps) error {
-	verbose := isDebugVerbose()
+	verbose := isDebugVerbose(cmdContext(cmd))
 
-	cfg, err := deps.loadConfig()
+	cfg, err := deps.loadConfig(cmdContext(cmd))
 	if err != nil {
 		return err
 	}
@@ -68,7 +93,7 @@ func runGetBreakpointsWithDeps(cmd *cobra.Command, args []string, deps liveDebug
 		return err
 	}
 
-	c, err := deps.newClient(cfg)
+	c, err := deps.newClient(cmdContext(cmd), cfg)
 	if err != nil {
 		return err
 	}
@@ -81,12 +106,12 @@ func runGetBreakpointsWithDeps(cmd *cobra.Command, args []string, deps liveDebug
 	workspaceResp, workspaceID, err := deps.getOrCreateWorkspace(handler, currentProjectPath())
 	if err != nil {
 		if verbose {
-			_ = printGraphQLResponse("getOrCreateWorkspaceV2", workspaceResp)
+			_ = printGraphQLResponse(cmdContext(cmd), "getOrCreateWorkspaceV2", workspaceResp)
 		}
 		return err
 	}
 	if verbose {
-		if err := printGraphQLResponse("getOrCreateWorkspaceV2", workspaceResp); err != nil {
+		if err := printGraphQLResponse(cmdContext(cmd), "getOrCreateWorkspaceV2", workspaceResp); err != nil {
 			return err
 		}
 	}
@@ -94,13 +119,13 @@ func runGetBreakpointsWithDeps(cmd *cobra.Command, args []string, deps liveDebug
 	workspaceRulesResp, err := deps.getWorkspaceRules(handler, workspaceID)
 	if err != nil {
 		if verbose {
-			_ = printGraphQLResponse("getWorkspaceRules", workspaceRulesResp)
+			_ = printGraphQLResponse(cmdContext(cmd), "getWorkspaceRules", workspaceRulesResp)
 		}
 		return err
 	}
 
 	if verbose {
-		return printGraphQLResponse("getWorkspaceRules", workspaceRulesResp)
+		return printGraphQLResponse(cmdContext(cmd), "getWorkspaceRules", workspaceRulesResp)
 	}
 
 	rows, err := extractBreakpointRows(workspaceRulesResp)
@@ -108,18 +133,21 @@ func runGetBreakpointsWithDeps(cmd *cobra.Command, args []string, deps liveDebug
 		return err
 	}
 
+	// This printer writes to rootCmd's writer rather than going through
+	// NewPrinter, so it opts into the get-wide --limit/--fields itself.
 	var printer output.Printer
-	if agentMode {
-		printer = output.NewAgentPrinter(rootCmd.OutOrStdout(), &output.ResponseContext{})
+	if agentMode(cmdContext(cmd)) {
+		printer = shapeListOutput(cmdContext(cmd), output.NewAgentPrinter(currentStdoutOr(cmdContext(cmd), rootCmd.OutOrStdout()), &output.ResponseContext{}), "json", false)
 	} else {
-		printer = output.NewPrinterWithOptions(outputFormat, rootCmd.OutOrStdout(), plainMode)
+		printer = shapeListOutput(cmdContext(cmd), newPrinterOpts(cmdContext(cmd), output.PrinterOptions{Format: outputFormat(cmdContext(cmd)), Writer: currentStdoutOr(cmdContext(cmd), rootCmd.OutOrStdout()), PlainMode: plainMode(cmdContext(cmd))}),
+			outputFormat(cmdContext(cmd)), output.IsTabularFormat(outputFormat(cmdContext(cmd)), plainMode(cmdContext(cmd))))
 	}
 	_ = enrichAgent(printer, "get", "breakpoint")
 	return printer.PrintList(rows)
 }
 
-func isDebugVerbose() bool {
-	return debugMode || verbosity > 0
+func isDebugVerbose(ctx context.Context) bool {
+	return debugMode(ctx) || verbosity(ctx) > 0
 }
 
 func extractBreakpointRows(workspaceRulesResp map[string]interface{}) ([]breakpointRow, error) {
@@ -355,7 +383,7 @@ func parseBreakpoint(input string) (string, int, error) {
 	return fileName, lineNumber, nil
 }
 
-func printGraphQLResponse(operation string, payload map[string]interface{}) error {
+func printGraphQLResponse(ctx context.Context, operation string, payload map[string]interface{}) error {
 	if payload == nil {
 		return nil
 	}
@@ -367,7 +395,7 @@ func printGraphQLResponse(operation string, payload map[string]interface{}) erro
 		return fmt.Errorf("failed to encode %s response: %w", operation, err)
 	}
 
-	_, _ = fmt.Fprintln(rootCmd.OutOrStdout(), string(encoded))
+	_, _ = fmt.Fprintln(currentStdoutOr(ctx, rootCmd.OutOrStdout()), string(encoded))
 	return nil
 }
 

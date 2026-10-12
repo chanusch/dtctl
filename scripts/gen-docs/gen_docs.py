@@ -49,6 +49,32 @@ def load_catalog(path: Path) -> dict:
         return json.load(f)
 
 
+# A `resource_scopes` entry maps each access level to its scope list, plus an
+# optional `alternatives` key: access level -> list of scope sets the endpoint
+# accepts in place of that level's list (any one set suffices).
+ALTERNATIVES_KEY = "alternatives"
+
+
+def scope_levels(entry: dict) -> list[tuple[str, list[str]]]:
+    """The (access level, scopes) pairs of a resource_scopes entry, sorted,
+    without the `alternatives` key."""
+    return [(level, scopes) for level, scopes in sorted(entry.items())
+            if level != ALTERNATIVES_KEY]
+
+
+def format_alternatives(alternatives: list[list[str]]) -> str:
+    """Render alternative scope sets for a markdown table cell."""
+    sets = [" + ".join(f"`{s}`" for s in alt) for alt in alternatives]
+    return "or instead any one of: " + "; ".join(sets)
+
+
+def scope_cell(scopes: list[str], alternatives: list[list[str]] | None) -> str:
+    cell = ", ".join(f"`{s}`" for s in scopes)
+    if alternatives:
+        cell += " (" + format_alternatives(alternatives) + ")"
+    return cell
+
+
 def canonical_resource(raw: str, known: set[str]) -> str:
     """Map a verb's resource string (singular or plural, varies by verb) to
     the canonical singular id used as a key in `resource_scopes`.
@@ -178,20 +204,21 @@ def render_resource_page(resource: str, ops: list[dict], catalog: dict, display_
         out.append(
             "\n<!-- GAP: dtctl's catalog does not expose flags scoped to a single "
             "resource - only verb-level flags (shown above) plus dtctl's global "
-            "flags (-o/--output, --dry-run, --context, etc.) apply here. -->\n"
+            "flags (-o/--output, --context, etc.) apply here. -->\n"
         )
     else:
         out.append(
             "No resource-specific or verb-specific flags are declared in the "
             "catalog for the operations above; only dtctl's **global flags** "
-            "apply (`-o/--output`, `--dry-run`, `--context`, `--jq`, `-v`, etc. "
+            "apply (`-o/--output`, `--context`, `--jq`, `-v`, etc. "
             "- see `COMMANDS.md`).\n"
         )
 
     out.append("\n## Required token scopes\n")
     resource_scopes = catalog.get("resource_scopes", {}).get(resource, {})
-    scope_rows = [[level, ", ".join(f"`{s}`" for s in scopes)]
-                  for level, scopes in sorted(resource_scopes.items())]
+    alternatives = resource_scopes.get(ALTERNATIVES_KEY, {})
+    scope_rows = [[level, scope_cell(scopes, alternatives.get(level))]
+                  for level, scopes in scope_levels(resource_scopes)]
     out.append(md_table(["Safety level", "Scopes"], scope_rows))
 
     out.append("\n## Output\n")
@@ -255,16 +282,21 @@ def render_token_scopes(catalog: dict) -> str:
     resource_scopes = catalog.get("resource_scopes", {})
     levels: dict[str, list[tuple[str, str]]] = {}
     for resource, by_level in sorted(resource_scopes.items()):
-        for level, scopes in sorted(by_level.items()):
+        alternatives = by_level.get(ALTERNATIVES_KEY, {})
+        for level, scopes in scope_levels(by_level):
             for scope in scopes:
-                levels.setdefault(level, []).append((resource, scope))
+                levels.setdefault(level, []).append((resource, f"`{scope}`"))
+            if alternatives.get(level):
+                levels[level].append((resource, format_alternatives(alternatives[level])))
 
     out = ["# TOKEN_SCOPES\n",
            "Generated reference of the API token scopes each resource requires, "
            "grouped by safety level.\n"]
     for level in sorted(levels.keys()):
         out.append(f"## {level}\n")
-        rows = [[resource, f"`{scope}`"] for resource, scope in sorted(set(levels[level]))]
+        # Cells are pre-rendered; a backtick sorts before "or instead", so a
+        # resource's alternatives row follows its scope rows.
+        rows = [[resource, cell] for resource, cell in sorted(set(levels[level]))]
         out.append(md_table(["Resource", "Scope"], rows))
     return "\n".join(out) + "\n"
 

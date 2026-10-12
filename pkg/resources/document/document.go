@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
@@ -251,18 +253,19 @@ func fromSDKSnapshotList(l *sdkdocument.SnapshotList) *SnapshotList {
 
 // Re-export SDK types that don't have table tags (pure data types).
 type (
-	DocumentMetadata              = sdkdocument.DocumentMetadata
-	DocumentList                  = sdkdocument.DocumentList
-	DocumentFilters               = sdkdocument.DocumentFilters
-	ModificationInfo              = sdkdocument.ModificationInfo
-	ShareInfo                     = sdkdocument.ShareInfo
-	UserContext                   = sdkdocument.UserContext
-	CreateRequest                 = sdkdocument.CreateRequest
-	UpdateRequest                 = sdkdocument.UpdateRequest
-	SsoEntity                     = sdkdocument.SsoEntity
-	CreateDirectShareRequest      = sdkdocument.CreateDirectShareRequest
-	CreateEnvironmentShareRequest = sdkdocument.CreateEnvironmentShareRequest
-	SnapshotModInfo               = sdkdocument.SnapshotModInfo
+	DocumentMetadata                = sdkdocument.DocumentMetadata
+	DocumentList                    = sdkdocument.DocumentList
+	DocumentFilters                 = sdkdocument.DocumentFilters
+	ModificationInfo                = sdkdocument.ModificationInfo
+	ShareInfo                       = sdkdocument.ShareInfo
+	UserContext                     = sdkdocument.UserContext
+	CreateRequest                   = sdkdocument.CreateRequest
+	UpdateRequest                   = sdkdocument.UpdateRequest
+	SsoEntity                       = sdkdocument.SsoEntity
+	CreateDirectShareRequest        = sdkdocument.CreateDirectShareRequest
+	AddDirectShareRecipientsOptions = sdkdocument.AddDirectShareRecipientsOptions
+	CreateEnvironmentShareRequest   = sdkdocument.CreateEnvironmentShareRequest
+	SnapshotModInfo                 = sdkdocument.SnapshotModInfo
 )
 
 // Re-export SDK sentinel errors.
@@ -423,6 +426,12 @@ func (h *Handler) AddDirectShareRecipients(shareID string, recipients []SsoEntit
 	return h.sdk.AddDirectShareRecipients(context.Background(), shareID, recipients)
 }
 
+// AddDirectShareRecipientsWithOptions adds recipients to a direct share, honoring opts.
+func (h *Handler) AddDirectShareRecipientsWithOptions(shareID string, recipients []SsoEntity,
+	opts AddDirectShareRecipientsOptions) error {
+	return h.sdk.AddDirectShareRecipientsWithOptions(context.Background(), shareID, recipients, opts)
+}
+
 // RemoveDirectShareRecipients removes recipients from a direct share.
 func (h *Handler) RemoveDirectShareRecipients(shareID string, recipientIDs []string) error {
 	return h.sdk.RemoveDirectShareRecipients(context.Background(), shareID, recipientIDs)
@@ -444,6 +453,62 @@ func (h *Handler) ListEnvironmentShares(documentID string) (*EnvironmentShareLis
 		return nil, err
 	}
 	return fromSDKEnvironmentShareList(l), nil
+}
+
+// GetEnvironmentShare retrieves an environment share by ID.
+func (h *Handler) GetEnvironmentShare(shareID string) (*EnvironmentShare, error) {
+	s, err := h.sdk.GetEnvironmentShare(context.Background(), shareID)
+	if err != nil {
+		return nil, err
+	}
+	return fromSDKEnvironmentShare(s), nil
+}
+
+// EnvironmentShareClaim is the CLI read model for a claimed environment share.
+type EnvironmentShareClaim struct {
+	DocumentID   string   `json:"documentId" yaml:"documentId" table:"DOCUMENT_ID"`
+	Name         string   `json:"name,omitempty" yaml:"name,omitempty" table:"NAME"`
+	DocumentType string   `json:"documentType" yaml:"documentType" table:"TYPE"`
+	Access       []string `json:"access" yaml:"access" table:"-"`
+	AccessLevel  string   `json:"-" yaml:"-" table:"ACCESS"`
+	URL          string   `json:"url,omitempty" yaml:"url,omitempty" table:"URL,wide"`
+}
+
+// ClaimEnvironmentShare claims an environment share, granting the current user
+// access to the shared document.
+func (h *Handler) ClaimEnvironmentShare(shareID string) (*EnvironmentShareClaim, error) {
+	r, err := h.sdk.ClaimEnvironmentShare(context.Background(), shareID)
+	if err != nil {
+		return nil, err
+	}
+	return &EnvironmentShareClaim{
+		DocumentID:   r.DocumentID,
+		DocumentType: r.DocumentType,
+		Access:       r.Access,
+		AccessLevel:  strings.Join(r.Access, ","),
+	}, nil
+}
+
+// ParseShareRef accepts a bare share ID or a pasted share link
+// (`https://<env>/.../#share=<id>`) and returns the share ID plus the link's
+// lowercase hostname ("" for a bare ID).
+func ParseShareRef(input string) (id, host string, err error) {
+	input = strings.TrimSpace(input)
+	if i := strings.Index(input, "#share="); i >= 0 {
+		id = input[i+len("#share="):]
+		if j := strings.IndexByte(id, '&'); j >= 0 {
+			id = id[:j]
+		}
+		if u, perr := url.Parse(input[:i]); perr == nil {
+			host = strings.ToLower(u.Hostname())
+		}
+	} else {
+		id = input
+	}
+	if id == "" || strings.ContainsAny(id, "/?# ") {
+		return "", "", fmt.Errorf("invalid share ID or URL %q", input)
+	}
+	return id, host, nil
 }
 
 // DeleteEnvironmentShare deletes an environment share.

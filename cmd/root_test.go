@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +22,12 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	resapi "github.com/dynatrace-oss/dtctl/pkg/resources/api"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
 	"github.com/dynatrace-oss/dtctl/pkg/suggest"
+	"github.com/dynatrace-oss/dtctl/sdk/api/appengine"
 	sdkquery "github.com/dynatrace-oss/dtctl/sdk/api/query"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
 
 // TestBuildSpanName verifies that buildSpanName correctly extracts the verb and
@@ -114,10 +119,10 @@ func TestGlobalFlags_Config(t *testing.T) {
 			viper.Reset()
 
 			// Set config file flag
-			cfgFile = configPath
+			gFlags.cfgFile = configPath
 
 			// Initialize config
-			initConfig()
+			initConfig(context.Background())
 
 			// Verify config was loaded if custom path provided
 			if tt.configFile != "" && viper.ConfigFileUsed() != configPath {
@@ -223,11 +228,11 @@ func TestLoadConfig(t *testing.T) {
 			}
 
 			// Save original values and environment
-			origCfgFile := cfgFile
+			origCfgFile := cfgFile(context.Background())
 			origContextName := contextName
 			origEnvContext := os.Getenv("DTCTL_CONTEXT")
 			defer func() {
-				cfgFile = origCfgFile
+				gFlags.cfgFile = origCfgFile
 				contextName = origContextName
 				if origEnvContext != "" {
 					_ = os.Setenv("DTCTL_CONTEXT", origEnvContext)
@@ -245,11 +250,11 @@ func TestLoadConfig(t *testing.T) {
 
 			// Reset state
 			viper.Reset()
-			cfgFile = configPath
+			gFlags.cfgFile = configPath
 			contextName = tt.contextFlagValue
 
 			// Initialize config
-			initConfig()
+			initConfig(context.Background())
 
 			// Load config with context override
 			loadedCfg, err := LoadConfig()
@@ -271,7 +276,7 @@ func TestGlobalFlags_Output(t *testing.T) {
 	for _, format := range validFormats {
 		t.Run(format, func(t *testing.T) {
 			viper.Reset()
-			outputFormat = format
+			gFlags.outputFormat = format
 			viper.Set("output", format)
 
 			got := viper.GetString("output")
@@ -308,10 +313,10 @@ func TestGlobalFlags_Verbose(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			verbosity = tt.verbosity
+			gFlags.verbosity = tt.verbosity
 
-			if verbosity != tt.want {
-				t.Errorf("verbosity = %v, want %v", verbosity, tt.want)
+			if verbosity(context.Background()) != tt.want {
+				t.Errorf("gFlags.verbosity = %v, want %v", verbosity(context.Background()), tt.want)
 			}
 		})
 	}
@@ -338,10 +343,10 @@ func TestGlobalFlags_DryRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dryRun = tt.dryRun
+			gFlags.dryRun = tt.dryRun
 
-			if dryRun != tt.want {
-				t.Errorf("dryRun = %v, want %v", dryRun, tt.want)
+			if dryRun(context.Background()) != tt.want {
+				t.Errorf("gFlags.dryRun = %v, want %v", dryRun(context.Background()), tt.want)
 			}
 		})
 	}
@@ -368,7 +373,7 @@ func TestGlobalFlags_PlainMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plainMode = tt.plain
+			gFlags.plainMode = tt.plain
 
 			got := GetPlainMode()
 			if got != tt.want {
@@ -404,7 +409,7 @@ func TestGlobalFlags_ChunkSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chunkSize = tt.chunkSize
+			gFlags.chunkSize = tt.chunkSize
 
 			got := GetChunkSize()
 			if got != tt.want {
@@ -440,8 +445,8 @@ func TestNewPrinter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			outputFormat = tt.outputFormat
-			plainMode = tt.plainMode
+			gFlags.outputFormat = tt.outputFormat
+			gFlags.plainMode = tt.plainMode
 
 			printer := NewPrinter()
 			if printer == nil {
@@ -477,12 +482,12 @@ func TestInitConfig(t *testing.T) {
 				cfg := config.NewConfig()
 				cfg.SetContext("test", "https://test.dt.com", "token")
 				_ = cfg.SaveTo(configPath)
-				cfgFile = configPath
+				gFlags.cfgFile = configPath
 			} else {
-				cfgFile = ""
+				gFlags.cfgFile = ""
 			}
 
-			initConfig()
+			initConfig(context.Background())
 
 			configUsed := viper.ConfigFileUsed()
 			if tt.wantConfigUsed && configUsed == "" {
@@ -501,11 +506,11 @@ func TestInitConfig(t *testing.T) {
 // the audience it was built for. Explicit json must keep agent mode on; an
 // explicit non-JSON format must still opt out.
 func TestAgentModeAutoDetectWithExplicitJSON(t *testing.T) {
-	origAgent, origNoAgent, origOutput := agentMode, noAgent, outputFormat
+	origAgent, origNoAgent, origOutput := agentMode(context.Background()), noAgent(context.Background()), outputFormat(context.Background())
 	outputFlag := rootCmd.PersistentFlags().Lookup("output")
 	origChanged := outputFlag.Changed
 	defer func() {
-		agentMode, noAgent, outputFormat = origAgent, origNoAgent, origOutput
+		gFlags.agentMode, gFlags.noAgent, gFlags.outputFormat = origAgent, origNoAgent, origOutput
 		outputFlag.Changed = origChanged
 		os.Unsetenv("AI_AGENT")
 	}()
@@ -524,12 +529,12 @@ func TestAgentModeAutoDetectWithExplicitJSON(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			agentMode, noAgent = false, false
-			outputFormat = tc.format
+			gFlags.agentMode, gFlags.noAgent = false, false
+			gFlags.outputFormat = tc.format
 			outputFlag.Changed = tc.changed
-			initConfig()
-			if agentMode != tc.want {
-				t.Errorf("agentMode = %v, want %v", agentMode, tc.want)
+			initConfig(context.Background())
+			if agentMode(context.Background()) != tc.want {
+				t.Errorf("gFlags.agentMode = %v, want %v", agentMode(context.Background()), tc.want)
 			}
 		})
 	}
@@ -565,7 +570,7 @@ func TestEnhanceFlagError(t *testing.T) {
 			}
 
 			// Verify our global flags are in the list
-			expectedFlags := []string{"config", "context", "output", "verbose", "dry-run", "plain", "chunk-size"}
+			expectedFlags := []string{"config", "context", "output", "verbose", "plain", "chunk-size"}
 			for _, expectedFlag := range expectedFlags {
 				found := false
 				for _, flag := range flags {
@@ -598,7 +603,7 @@ func TestVerbSynonyms(t *testing.T) {
 		t.Errorf("usage hint missing: %q", cmdErr.UsageHint)
 	}
 	// The hint must reach the agent envelope.
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 	if len(detail.Suggestions) != 2 || !strings.Contains(detail.Suggestions[1], "dtctl get <resource>") {
 		t.Errorf("envelope suggestions = %v", detail.Suggestions)
 	}
@@ -829,7 +834,7 @@ func TestErrorToDetail_DiagnosticError(t *testing.T) {
 		},
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "auth_required" {
 		t.Errorf("Code = %q, want %q", detail.Code, "auth_required")
@@ -875,7 +880,7 @@ func TestErrorToDetail_DiagnosticErrorStatusCodes(t *testing.T) {
 				StatusCode: tt.statusCode,
 				Message:    "test error",
 			}
-			detail := errorToDetail(err)
+			detail := errorToDetail(context.Background(), err)
 			if detail.Code != tt.wantCode {
 				t.Errorf("Code = %q, want %q", detail.Code, tt.wantCode)
 			}
@@ -884,38 +889,158 @@ func TestErrorToDetail_DiagnosticErrorStatusCodes(t *testing.T) {
 }
 
 func TestErrorToDetail_APIError(t *testing.T) {
-	err := &client.APIError{
-		StatusCode: 404,
-		Message:    "not found",
-		Details:    "workflow does not exist",
-	}
+	err := httpclient.NewAPIError(404, "not found", "workflow does not exist")
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "not_found" {
 		t.Errorf("Code = %q, want %q", detail.Code, "not_found")
 	}
-	if detail.Message != "not found - workflow does not exist" {
-		t.Errorf("Message = %q, want %q", detail.Message, "not found - workflow does not exist")
+	if want := "API error (404): not found - workflow does not exist"; detail.Message != want {
+		t.Errorf("Message = %q, want %q", detail.Message, want)
 	}
 	if detail.StatusCode != 404 {
 		t.Errorf("StatusCode = %d, want %d", detail.StatusCode, 404)
 	}
 }
 
-func TestErrorToDetail_APIErrorWithoutDetails(t *testing.T) {
-	err := &client.APIError{
-		StatusCode: 500,
-		Message:    "internal server error",
+// TestSDKHTTPErrorIsTyped covers #498: an SDK HTTP error, wrapped by a
+// handler with %w, must keep its documented code, status and exit code.
+func TestSDKHTTPErrorIsTyped(t *testing.T) {
+	tests := []struct {
+		status   int
+		wantCode string
+		wantExit int
+	}{
+		{401, "auth_required", client.ExitAuthError},
+		{403, "permission_denied", client.ExitPermissionError},
+		{404, "not_found", client.ExitNotFoundError},
 	}
+	for _, tt := range tests {
+		t.Run(tt.wantCode, func(t *testing.T) {
+			err := fmt.Errorf("failed to get dashboard: %w",
+				httpclient.NewAPIError(tt.status, "Configuration not found", ""))
 
-	detail := errorToDetail(err)
+			detail := errorToDetail(context.Background(), err)
+			if detail.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", detail.Code, tt.wantCode)
+			}
+			if detail.StatusCode != tt.status {
+				t.Errorf("StatusCode = %d, want %d", detail.StatusCode, tt.status)
+			}
+			if !strings.HasPrefix(detail.Message, "failed to get dashboard: ") {
+				t.Errorf("Message = %q, want the handler context kept", detail.Message)
+			}
+			if got := exitCodeForError(err); got != tt.wantExit {
+				t.Errorf("exitCodeForError() = %d, want %d", got, tt.wantExit)
+			}
+		})
+	}
+}
+
+// TestAPIIndexErrorsKeepTheirOwnExitCode pins the ordering exitCodeForError
+// shares with errorToDetail: RegistryUnavailableError and SpecUnavailableError
+// wrap an APIError but classify themselves, so the wrapped status must not
+// decide the exit code. Answering "no API index here" with exit 4 would tell a
+// script the API it asked about does not exist.
+func TestAPIIndexErrorsKeepTheirOwnExitCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+		wantExit int
+	}{
+		{
+			name: "unpublished index is not a missing resource",
+			err: &resapi.RegistryUnavailableError{
+				Path:       "/platform/metadata/v1/swagger-ui.json",
+				StatusCode: 404,
+				Err:        httpclient.NewAPIError(404, "Not Found", ""),
+			},
+			wantCode: "api_index_unavailable",
+			wantExit: client.ExitError,
+		},
+		{
+			name: "refused index is about the credential",
+			err: &resapi.RegistryUnavailableError{
+				Path:       "/platform/metadata/v1/swagger-ui.json",
+				StatusCode: 403,
+				Err:        httpclient.NewAPIError(403, "Forbidden", ""),
+			},
+			wantCode: "permission_denied",
+			wantExit: client.ExitPermissionError,
+		},
+		{
+			name: "unreadable specification is not a missing resource",
+			err: &resapi.SpecUnavailableError{
+				DocPath:    "/platform/widget/v1/openapi.yaml",
+				StatusCode: 404,
+				Err:        httpclient.NewAPIError(404, "Not Found", ""),
+			},
+			wantCode: "api_spec_unavailable",
+			wantExit: client.ExitError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errorToDetail(context.Background(), tt.err).Code; got != tt.wantCode {
+				t.Errorf("Code = %q, want %q", got, tt.wantCode)
+			}
+			if got := exitCodeForError(tt.err); got != tt.wantExit {
+				t.Errorf("exitCodeForError() = %d, want %d", got, tt.wantExit)
+			}
+		})
+	}
+}
+
+func TestErrorToDetail_APIErrorWithoutDetails(t *testing.T) {
+	err := httpclient.NewAPIError(500, "internal server error", "")
+
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "server_error" {
 		t.Errorf("Code = %q, want %q", detail.Code, "server_error")
 	}
-	if detail.Message != "internal server error" {
-		t.Errorf("Message = %q, want %q", detail.Message, "internal server error")
+	if want := "API error (500): internal server error"; detail.Message != want {
+		t.Errorf("Message = %q, want %q", detail.Message, want)
+	}
+}
+
+// TestErrorToDetail_FunctionExecutionError pins that a failure inside submitted
+// function code does not classify as server_error. App Engine reports it with
+// the non-standard status 540 or 541, and docs/AGENT_MODE.md tells an agent to
+// retry a server_error with backoff — which, for a deterministic bug in the
+// caller's own code, is an endless loop.
+func TestErrorToDetail_FunctionExecutionError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "javascript error",
+			err:  &appengine.ExecutionError{StatusCode: 540, Message: "JavaScript error occurred", Body: "ReferenceError: x is not defined"},
+		},
+		{
+			name: "runtime error",
+			err:  &appengine.ExecutionError{StatusCode: 541, Message: "runtime error occurred", Body: ""},
+		},
+		{
+			name: "wrapped by the caller",
+			err:  fmt.Errorf("execute code: %w", &appengine.ExecutionError{StatusCode: 540, Message: "JavaScript error occurred"}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := errorToDetail(context.Background(), tt.err).Code; got != "function_error" {
+				t.Errorf("Code = %q, want %q", got, "function_error")
+			}
+			if got := errorToDetail(context.Background(), tt.err).StatusCode; got != 0 {
+				t.Errorf("StatusCode = %d, want 0 — 540 and 541 are not HTTP failures", got)
+			}
+			if got := exitCodeForError(tt.err); got != client.ExitError {
+				t.Errorf("exitCodeForError() = %d, want %d", got, client.ExitError)
+			}
+		})
 	}
 }
 
@@ -930,7 +1055,7 @@ func TestErrorToDetail_SafetyError(t *testing.T) {
 		},
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "safety_blocked" {
 		t.Errorf("Code = %q, want %q", detail.Code, "safety_blocked")
@@ -953,7 +1078,7 @@ func TestErrorToDetail_CommandError(t *testing.T) {
 		},
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "unknown_command" {
 		t.Errorf("Code = %q, want %q", detail.Code, "unknown_command")
@@ -975,7 +1100,7 @@ func TestErrorToDetail_CommandErrorNoSuggestion(t *testing.T) {
 		Message: `unknown command "xyzzy"`,
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "unknown_command" {
 		t.Errorf("Code = %q, want %q", detail.Code, "unknown_command")
@@ -995,7 +1120,7 @@ func TestErrorToDetail_FlagError(t *testing.T) {
 		},
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "unknown_command" {
 		t.Errorf("Code = %q, want %q", detail.Code, "unknown_command")
@@ -1011,7 +1136,7 @@ func TestErrorToDetail_FlagError(t *testing.T) {
 func TestErrorToDetail_GenericError(t *testing.T) {
 	err := fmt.Errorf("something unexpected happened")
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "error" {
 		t.Errorf("Code = %q, want %q", detail.Code, "error")
@@ -1029,7 +1154,7 @@ func TestErrorToDetail_WrappedDiagnosticError(t *testing.T) {
 	}
 	wrapped := fmt.Errorf("command failed: %w", inner)
 
-	detail := errorToDetail(wrapped)
+	detail := errorToDetail(context.Background(), wrapped)
 
 	if detail.Code != "permission_denied" {
 		t.Errorf("Code = %q, want %q (should unwrap diagnostic.Error)", detail.Code, "permission_denied")
@@ -1040,11 +1165,11 @@ func TestErrorToDetail_WrappedDiagnosticError(t *testing.T) {
 }
 
 func TestErrorToDetail_DiagnosticPrecedesAPIError(t *testing.T) {
-	// diagnostic.Error wraps a client.APIError — diagnostic should take precedence
-	apiErr := &client.APIError{StatusCode: 404, Message: "not found"}
-	diagErr := diagnostic.Wrap(apiErr, "get workflows")
+	// diagnostic.Error wraps an httpclient.APIError — diagnostic should take precedence
+	apiErr := httpclient.NewAPIError(404, "not found", "")
+	diagErr := &diagnostic.Error{Operation: "get workflows", StatusCode: 404, Err: apiErr}
 
-	detail := errorToDetail(diagErr)
+	detail := errorToDetail(context.Background(), diagErr)
 
 	// Should use diagnostic.Error classification, not raw APIError
 	if detail.Code != "not_found" {
@@ -1062,7 +1187,7 @@ func TestErrorToDetail_HookRejectedError(t *testing.T) {
 		Stderr:   "validation failed: missing required field 'owner'",
 	}
 
-	detail := errorToDetail(err)
+	detail := errorToDetail(context.Background(), err)
 
 	if detail.Code != "hook_rejected" {
 		t.Errorf("Code = %q, want %q", detail.Code, "hook_rejected")
@@ -1089,7 +1214,7 @@ func TestErrorToDetail_HookRejectedErrorWrapped(t *testing.T) {
 	}
 	wrapped := fmt.Errorf("apply failed: %w", inner)
 
-	detail := errorToDetail(wrapped)
+	detail := errorToDetail(context.Background(), wrapped)
 
 	if detail.Code != "hook_rejected" {
 		t.Errorf("Code = %q, want %q (should unwrap HookRejectedError)", detail.Code, "hook_rejected")
@@ -1118,11 +1243,28 @@ func TestClassifyGenericError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classifyGenericError(tt.err)
+			got := classifyGenericError(context.Background(), tt.err)
 			if got != tt.wantCode {
 				t.Errorf("classifyGenericError(%q) = %q, want %q", tt.err, got, tt.wantCode)
 			}
 		})
+	}
+}
+
+// TestClassifyGenericError_DeadlineByType: a deadline whose wording names no
+// timeout is classified "timeout" on a concurrent invocation, where it races
+// the HTTP client timeout, and keeps its historical "error" everywhere else.
+func TestClassifyGenericError_DeadlineByType(t *testing.T) {
+	err := fmt.Errorf("failed to list documents: %w",
+		&url.Error{Op: "Get", URL: "https://env.example.test", Err: context.DeadlineExceeded})
+
+	if got := classifyGenericError(context.Background(), err); got != "error" {
+		t.Errorf("CLI/serialized: classifyGenericError = %q, want %q (unchanged)", got, "error")
+	}
+
+	ctx := withInvocation(context.Background(), &invocation{concurrent: true})
+	if got := classifyGenericError(ctx, err); got != "timeout" {
+		t.Errorf("concurrent: classifyGenericError = %q, want %q", got, "timeout")
 	}
 }
 
@@ -1153,7 +1295,7 @@ func TestExitCodeForError_DiagnosticError(t *testing.T) {
 }
 
 func TestExitCodeForError_APIError(t *testing.T) {
-	err := &client.APIError{StatusCode: 404, Message: "not found"}
+	err := httpclient.NewAPIError(404, "not found", "")
 	got := exitCodeForError(err)
 	if got != client.ExitNotFoundError {
 		t.Errorf("exitCodeForError() = %d, want %d", got, client.ExitNotFoundError)
@@ -1207,12 +1349,12 @@ func TestIsURLRelatedError(t *testing.T) {
 		},
 		{
 			name: "API error 403",
-			err:  &client.APIError{StatusCode: 403, Message: "forbidden"},
+			err:  httpclient.NewAPIError(403, "forbidden", ""),
 			want: true,
 		},
 		{
 			name: "API error 500 not URL-related",
-			err:  &client.APIError{StatusCode: 500, Message: "server error"},
+			err:  httpclient.NewAPIError(500, "server error", ""),
 			want: false,
 		},
 		{
@@ -1415,11 +1557,11 @@ func TestFlagsTakingValues_SyncGuard(t *testing.T) {
 }
 
 func TestValidateGlobalFlags_JQFormatConstraint(t *testing.T) {
-	origOutput := outputFormat
-	origJQ := jqFilter
+	origOutput := outputFormat(context.Background())
+	origJQ := jqFilter(context.Background())
 	defer func() {
-		outputFormat = origOutput
-		jqFilter = origJQ
+		gFlags.outputFormat = origOutput
+		gFlags.jqFilter = origJQ
 	}()
 
 	tests := []struct {
@@ -1439,36 +1581,36 @@ func TestValidateGlobalFlags_JQFormatConstraint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			outputFormat = tt.format
-			jqFilter = tt.jq
+			gFlags.outputFormat = tt.format
+			gFlags.jqFilter = tt.jq
 
-			err := validateGlobalFlags()
+			err := validateGlobalFlags(context.Background())
 			if err != nil {
 				t.Fatalf("unexpected error for format=%q jq=%q: %v", tt.format, tt.jq, err)
 			}
-			if outputFormat != tt.wantFormat {
-				t.Fatalf("outputFormat = %q, want %q", outputFormat, tt.wantFormat)
+			if outputFormat(context.Background()) != tt.wantFormat {
+				t.Fatalf("gFlags.outputFormat = %q, want %q", outputFormat(context.Background()), tt.wantFormat)
 			}
 		})
 	}
 }
 
 func TestAgentJQ_KeepContextAndFilterResult(t *testing.T) {
-	origOutput := outputFormat
-	origJQ := jqFilter
-	origAgent := agentMode
-	origPlain := plainMode
+	origOutput := outputFormat(context.Background())
+	origJQ := jqFilter(context.Background())
+	origAgent := agentMode(context.Background())
+	origPlain := plainMode(context.Background())
 	defer func() {
-		outputFormat = origOutput
-		jqFilter = origJQ
-		agentMode = origAgent
-		plainMode = origPlain
+		gFlags.outputFormat = origOutput
+		gFlags.jqFilter = origJQ
+		gFlags.agentMode = origAgent
+		gFlags.plainMode = origPlain
 	}()
 
-	outputFormat = "json"
-	jqFilter = ".name"
-	agentMode = true
-	plainMode = true
+	gFlags.outputFormat = "json"
+	gFlags.jqFilter = ".name"
+	gFlags.agentMode = true
+	gFlags.plainMode = true
 
 	var buf bytes.Buffer
 	withCapturedStdout(t, &buf, func() {
@@ -1506,21 +1648,21 @@ func TestAgentJQ_KeepContextAndFilterResult(t *testing.T) {
 }
 
 func TestAgentJQ_BadFilterYieldsErrorEnvelope(t *testing.T) {
-	origOutput := outputFormat
-	origJQ := jqFilter
-	origAgent := agentMode
-	origPlain := plainMode
+	origOutput := outputFormat(context.Background())
+	origJQ := jqFilter(context.Background())
+	origAgent := agentMode(context.Background())
+	origPlain := plainMode(context.Background())
 	defer func() {
-		outputFormat = origOutput
-		jqFilter = origJQ
-		agentMode = origAgent
-		plainMode = origPlain
+		gFlags.outputFormat = origOutput
+		gFlags.jqFilter = origJQ
+		gFlags.agentMode = origAgent
+		gFlags.plainMode = origPlain
 	}()
 
-	outputFormat = "json"
-	jqFilter = ".["
-	agentMode = true
-	plainMode = true
+	gFlags.outputFormat = "json"
+	gFlags.jqFilter = ".["
+	gFlags.agentMode = true
+	gFlags.plainMode = true
 
 	var buf bytes.Buffer
 	withCapturedStdout(t, &buf, func() {
@@ -1529,7 +1671,7 @@ func TestAgentJQ_BadFilterYieldsErrorEnvelope(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected invalid --jq filter error")
 		}
-		detail := errorToDetail(err)
+		detail := errorToDetail(context.Background(), err)
 		if printErr := output.PrintError(os.Stdout, detail); printErr != nil {
 			t.Fatalf("failed to print error envelope: %v", printErr)
 		}
@@ -1549,6 +1691,59 @@ func TestAgentJQ_BadFilterYieldsErrorEnvelope(t *testing.T) {
 	}
 	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "invalid --jq filter") {
 		t.Fatalf("expected jq error message, got: %q", msg)
+	}
+}
+
+// TestAgentJQ_WrongShapeYieldsShapeMismatchEnvelope covers #413 at the envelope
+// layer: a well-formed filter that addresses a key the payload doesn't have must
+// come back as ok=false with the stable jq_shape_mismatch code and the payload's
+// real keys in the message — not as a confident null with exit code 0.
+func TestAgentJQ_WrongShapeYieldsShapeMismatchEnvelope(t *testing.T) {
+	origOutput := outputFormat(context.Background())
+	origJQ := jqFilter(context.Background())
+	origAgent := agentMode(context.Background())
+	origPlain := plainMode(context.Background())
+	defer func() {
+		gFlags.outputFormat = origOutput
+		gFlags.jqFilter = origJQ
+		gFlags.agentMode = origAgent
+		gFlags.plainMode = origPlain
+	}()
+
+	gFlags.outputFormat = "json"
+	gFlags.jqFilter = ".result.records"
+	gFlags.agentMode = true
+	gFlags.plainMode = true
+
+	var buf bytes.Buffer
+	withCapturedStdout(t, &buf, func() {
+		printer := NewPrinter()
+		err := printer.Print(map[string]interface{}{"records": []interface{}{}, "metadata": nil})
+		if err == nil {
+			t.Fatal("expected a shape-mismatch error for .result.records")
+		}
+		detail := errorToDetail(context.Background(), err)
+		if printErr := output.PrintError(os.Stdout, detail); printErr != nil {
+			t.Fatalf("failed to print error envelope: %v", printErr)
+		}
+	})
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if ok, _ := resp["ok"].(bool); ok {
+		t.Fatalf("expected ok=false response, got: %v", resp)
+	}
+	errObj, _ := resp["error"].(map[string]interface{})
+	if errObj == nil {
+		t.Fatalf("expected error object in response, got: %v", resp)
+	}
+	if code, _ := errObj["code"].(string); code != output.JQShapeMismatchCode {
+		t.Errorf("code = %q, want %q", code, output.JQShapeMismatchCode)
+	}
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "[metadata, records]") {
+		t.Errorf("message does not name the payload keys: %q", msg)
 	}
 }
 
@@ -1574,5 +1769,48 @@ func withCapturedStdout(t *testing.T, buf *bytes.Buffer, fn func()) {
 	}
 	if _, err := io.Copy(buf, r); err != nil {
 		t.Fatalf("failed to read captured stdout: %v", err)
+	}
+}
+
+// TestNounAdvice pins that `dtctl <noun>` names the commands reading it, not an edit-distance guess.
+func TestNounAdvice(t *testing.T) {
+	cases := []struct {
+		noun string
+		want []string
+	}{
+		{"slo", []string{"dtctl get slos"}},
+		{"workflow", []string{"dtctl get workflows", "dtctl get workflow-executions"}},
+		{"problems", []string{"fetch dt.davis.problems"}},
+		{"synthetic", []string{"fetch dt.synthetic.events"}},
+		{"slo-status", []string{"dtctl get slos"}},
+		{"workflow-runs", []string{"dtctl get workflows", "dtctl get workflow-executions"}},
+	}
+	for _, tc := range cases {
+		err := enhanceCommandError(rootCmd, fmt.Errorf(`unknown command %q for "dtctl"`, tc.noun))
+		var cmdErr *suggest.CommandError
+		if !errors.As(err, &cmdErr) {
+			t.Fatalf("%s: expected CommandError, got %T", tc.noun, err)
+		}
+		if cmdErr.Suggestion != nil {
+			t.Errorf("%s: kept the edit-distance guess %q", tc.noun, cmdErr.Suggestion.Value)
+		}
+		got := strings.Join(errorToDetail(context.Background(), err).Suggestions, "\n")
+		for _, w := range append(tc.want, "dtctl commands") {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: suggestions lack %q:\n%s", tc.noun, w, got)
+			}
+		}
+	}
+	// The same advice under a verb: `dtctl get problems`, `dtctl find slo`.
+	for noun, want := range map[string]string{"problems": "fetch dt.davis.problems", "slo": "dtctl get slos"} {
+		err := requireSubcommand(findCmd, []string{noun})
+		if got := strings.Join(errorToDetail(context.Background(), err).Suggestions, "\n"); !strings.Contains(got, want) {
+			t.Errorf("find %s: suggestions lack %q:\n%s", noun, want, got)
+		}
+	}
+	for _, typo := range []string{"quer", "getx", "account"} {
+		if a := nounAdvice(rootCmd, typo); a != nil {
+			t.Errorf("%s is no noun dtctl reads, got %q", typo, a)
+		}
 	}
 }

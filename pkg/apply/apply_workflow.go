@@ -33,7 +33,7 @@ func (a *Applier) applyWorkflow(data []byte, opts ApplyOptions) (ApplyResult, er
 
 		var warnings []string
 		// File had no id field before this apply — stamp it back or hint.
-		applyWriteBack(a.sourceFile, result.ID, "workflow", opts.WriteID, false, &warnings)
+		a.applyWriteBack(a.sourceFile, result.ID, "workflow", opts.WriteID, false, &warnings)
 
 		return &WorkflowApplyResult{
 			ApplyResultBase: ApplyResultBase{
@@ -49,6 +49,10 @@ func (a *Applier) applyWorkflow(data []byte, opts ApplyOptions) (ApplyResult, er
 	// Check if workflow exists
 	existing, err := handler.Get(id)
 	if err != nil {
+		if lookupErr := lookupError("workflow", id, err); lookupErr != nil {
+			return nil, lookupErr
+		}
+
 		// Workflow doesn't exist, create it
 		// Safety check for create operation
 		if err := a.checkSafety(safety.OperationCreate, safety.OwnershipUnknown); err != nil {
@@ -63,7 +67,7 @@ func (a *Applier) applyWorkflow(data []byte, opts ApplyOptions) (ApplyResult, er
 		var warnings []string
 		// File already had an id field (we got here because the resource wasn't found).
 		// No stamp or hint needed — the file is already self-contained.
-		applyWriteBack(a.sourceFile, result.ID, "workflow", opts.WriteID, true, &warnings)
+		a.applyWriteBack(a.sourceFile, result.ID, "workflow", opts.WriteID, true, &warnings)
 
 		return &WorkflowApplyResult{
 			ApplyResultBase: ApplyResultBase{

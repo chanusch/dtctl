@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,7 +10,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dynatrace-oss/dtctl/pkg/aidetect"
 )
 
 // captureRun invokes Run and returns its exit code plus everything written to
@@ -48,11 +52,7 @@ func isolatedConfig(t *testing.T, content string) {
 	// Suppress agent-mode auto-detection: the test machine may itself run
 	// under an AI agent (any of sdk/agentmode's known env vars), which would
 	// silently flip output to envelopes. Empty means "not set" to Detect.
-	for _, v := range []string{
-		"CLAUDECODE", "CLAUDE_CODE", "AI_AGENT", "CODEX", "CURSOR_AGENT",
-		"COPILOT_CLI", "GITHUB_COPILOT", "AGENT_CONTEXT_OUT", "KIRO_SESSION_ID",
-		"OPENCODE",
-	} {
+	for _, v := range aidetect.EnvVars() {
 		t.Setenv(v, "")
 	}
 }
@@ -208,6 +208,43 @@ func TestRunScopePreflightNotStacked(t *testing.T) {
 	}
 	require.Equal(t, outputs[0], outputs[1])
 	require.Equal(t, outputs[1], outputs[2])
+}
+
+// TestRunOptionsContextReachesCommandTree: RunOptions.Context must actually
+// arrive at a command body via cmd.Context(), not just get stored in runCtx
+// and dropped. Regression test for a gap where executeArgs called
+// rootCmd.Execute() instead of rootCmd.ExecuteContext(runCtx): every
+// cmd.Context() call added for cancellation support (get.go, logs.go,
+// wait.go, inventory.go, exec_slos.go, exec_workflows.go) silently read a
+// fresh context.Background() instead of the caller's context.
+func TestRunOptionsContextReachesCommandTree(t *testing.T) {
+	isolatedConfig(t, "contexts: []\n")
+
+	type probeKey struct{}
+	var seenValue any
+	var seenDone bool
+
+	probe := &cobra.Command{
+		Use: "zz-context-probe",
+		RunE: func(c *cobra.Command, _ []string) error {
+			ctx := c.Context()
+			require.NotNil(t, ctx, "cmd.Context() must never be nil after Run")
+			seenValue = ctx.Value(probeKey{})
+			seenDone = ctx.Err() != nil
+			return nil
+		},
+	}
+	rootCmd.AddCommand(probe)
+	defer rootCmd.RemoveCommand(probe)
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), probeKey{}, "marker"))
+	cancel() // cancelled up front, so a real propagation failure is unambiguous
+
+	code, _ := captureRun(t, []string{"zz-context-probe"}, RunOptions{Context: ctx})
+
+	require.Zero(t, code)
+	require.Equal(t, "marker", seenValue, "RunOptions.Context value must reach cmd.Context()")
+	require.True(t, seenDone, "RunOptions.Context cancellation must reach cmd.Context()")
 }
 
 // BenchmarkRun measures the per-invocation overhead of the pristine-tree

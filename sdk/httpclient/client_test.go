@@ -85,7 +85,9 @@ func TestClient_RetryResendsMultipartBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		if attempts == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
+			// 429, not a 5xx: PATCH is not idempotent, so a 429 is the
+			// failure that still gets it resent (see IsRetryable).
+			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 		file, _, err := r.FormFile("content")
@@ -123,5 +125,31 @@ func TestClient_RetryResendsMultipartBody(t *testing.T) {
 	}
 	if received != content {
 		t.Errorf("content = %q, want %q", received, content)
+	}
+}
+
+// TestClient_BeforeRequestErrorIsNotRetried pins that an error from a
+// before-request middleware is returned rather than retried. resty consults the
+// retry conditions even for an error it has already marked non-retryable, and
+// then dereferences the nil response while preparing the retry — so answering
+// "retry" here is a segfault, not a wasted attempt.
+func TestClient_BeforeRequestErrorIsNotRetried(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, WithToken("dt0c01.test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A channel cannot be marshalled, so resty's parseRequestBody fails before a
+	// transport is involved and the response stays nil.
+	if _, err := c.HTTP().R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]any{"ch": make(chan int)}).
+		Post("/platform/x/v1/y"); err == nil {
+		t.Fatal("expected an error from the request body middleware")
 	}
 }

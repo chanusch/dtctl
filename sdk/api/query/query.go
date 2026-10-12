@@ -6,10 +6,12 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -112,14 +114,14 @@ type Result struct {
 type ColumnTypes struct {
 	// IndexRange is the [start, end] record index range (inclusive) that these
 	// mappings apply to.
-	IndexRange []int `json:"indexRange"`
+	IndexRange []int `json:"indexRange" yaml:"indexRange"`
 	// Mappings maps a column name to its DQL type descriptor.
-	Mappings map[string]ColumnType `json:"mappings"`
+	Mappings map[string]ColumnType `json:"mappings" yaml:"mappings"`
 }
 
 // ColumnType is the DQL type descriptor for a single column, e.g. {"type": "long"}.
 type ColumnType struct {
-	Type string `json:"type"`
+	Type string `json:"type" yaml:"type"`
 }
 
 // MetricInfo describes a single metric referenced in a timeseries query result.
@@ -154,9 +156,70 @@ type GrailMetadata struct {
 	ScannedBytes              int64              `json:"scannedBytes,omitempty"`
 	ScannedDataPoints         int64              `json:"scannedDataPoints,omitempty"`
 	Sampled                   bool               `json:"sampled,omitempty"`
+	Approximations            Approximations     `json:"approximations,omitempty"`
 	Notifications             []Notification     `json:"notifications,omitempty"`
 	AnalysisTimeframe         *AnalysisTimeframe `json:"analysisTimeframe,omitempty"`
 	Contributions             *Contributions     `json:"contributions,omitempty"`
+}
+
+// Approximations lists the ways Grail answered a different question than the
+// query literally asked, e.g. "~ on content: substring match, not Grail's token
+// match". A non-empty list means the result is approximate even though the
+// query succeeded, so it must reach the caller rather than be dropped.
+//
+// The shape observed from the query API is a list of strings (#415). Decoding
+// is deliberately lenient anyway: this list lives inside the metadata block,
+// and a strict decode that failed on an unexpected entry shape would fail the
+// whole query response over an advisory field. A non-string entry keeps its
+// "message" when it has one and its compact JSON text otherwise; a value that
+// is not a list at all is kept as one entry if it is a string and ignored
+// otherwise.
+type Approximations []string
+
+// UnmarshalJSON implements json.Unmarshaler with the lenient decoding described
+// on Approximations.
+func (a *Approximations) UnmarshalJSON(data []byte) error {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		var single string
+		if json.Unmarshal(data, &single) == nil && single != "" {
+			*a = Approximations{single}
+			return nil
+		}
+		*a = nil
+		return nil
+	}
+	out := make(Approximations, 0, len(items))
+	for _, item := range items {
+		if text := approximationText(item); text != "" {
+			out = append(out, text)
+		}
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	*a = out
+	return nil
+}
+
+// approximationText renders one approximations entry as text: the string
+// itself, an object's "message", or the entry's compact JSON.
+func approximationText(item json.RawMessage) string {
+	var s string
+	if json.Unmarshal(item, &s) == nil {
+		return s
+	}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(item, &obj) == nil && obj.Message != "" {
+		return obj.Message
+	}
+	var buf bytes.Buffer
+	if json.Compact(&buf, item) != nil || buf.String() == "null" {
+		return ""
+	}
+	return buf.String()
 }
 
 // Contributions represents the bucket contributions for a query.
@@ -230,6 +293,10 @@ type ErrorResponse struct {
 			ErrorType    string   `json:"errorType"`
 			ErrorMessage string   `json:"errorMessage"`
 			Arguments    []string `json:"arguments"`
+			// QueryString is the query as the backend parsed it; the
+			// syntax error position indexes into it.
+			QueryString         string          `json:"queryString"`
+			SyntaxErrorPosition *SyntaxPosition `json:"syntaxErrorPosition"`
 		} `json:"details"`
 	} `json:"error"`
 }
@@ -244,6 +311,15 @@ const pollRequestTimeoutMs int64 = 5000
 // each long-poll returns RUNNING, so 5s is comfortably above the actual gap.
 const defaultPollingPromiseSeconds int32 = 5
 
+// executeTimeout caps the initial execute request, whatever the caller's
+// context allows.
+const executeTimeout = 2 * time.Minute
+
+// executeCancelGrace is how long the initial execute may keep running after the
+// caller's context is cancelled, so its request token can still come back and
+// the started query be cancelled on the backend. A var so tests can shorten it.
+var executeCancelGrace = 10 * time.Second
+
 const basePath = "/platform/storage/query/v1/query"
 
 // --- API methods ---
@@ -251,33 +327,39 @@ const basePath = "/platform/storage/query/v1/query"
 // Execute submits a DQL query for execution. If the query completes synchronously
 // the response contains the results directly. If the query is asynchronous
 // (HTTP 202 or state RUNNING), the response contains a RequestToken for polling.
+//
+// Execute accumulates the full result in memory; see ExecuteStream for a bounded-memory alternative.
 func (h *Handler) Execute(ctx context.Context, req ExecuteRequest) (*Response, error) {
-	var result Response
-
-	httpReq := h.client.HTTP().R().SetContext(ctx).
-		SetHeader("Content-Type", "application/json").
-		SetBody(req).
-		SetResult(&result)
-	if req.EnrichMetricMetadata {
-		httpReq.SetQueryParam("enrich", enrichMetricMetadataParam)
-	}
-	h.applyHeaders(httpReq)
-
-	resp, err := httpReq.Post(basePath + ":execute")
+	acc := &recordAccumulator{}
+	resp, err := h.executeRaw(ctx, req, acc.sink())
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+		return nil, err
 	}
+	acc.applyTo(resp)
+	return resp, nil
+}
 
-	// 200 with completed state or 202 with RUNNING are both valid
-	if resp.StatusCode() == 200 || resp.StatusCode() == 202 {
-		return &result, nil
+// recordAccumulator collects streamed rows so Execute/Poll can return them in
+// the Response, preserving the presence marker decodeResponseStream leaves.
+type recordAccumulator struct {
+	top    []map[string]interface{}
+	result []map[string]interface{}
+}
+
+func (a *recordAccumulator) sink() recordSink {
+	return recordSink{
+		onTop:    func(_ string, row map[string]interface{}) error { a.top = append(a.top, row); return nil },
+		onResult: func(_ string, row map[string]interface{}) error { a.result = append(a.result, row); return nil },
 	}
+}
 
-	if resp.IsError() {
-		return nil, parseError(resp.StatusCode(), resp.Body())
+func (a *recordAccumulator) applyTo(resp *Response) {
+	if resp.Records != nil {
+		resp.Records = orEmpty(a.top)
 	}
-
-	return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode())
+	if resp.Result != nil && resp.Result.Records != nil {
+		resp.Result.Records = orEmpty(a.result)
+	}
 }
 
 // Poll polls for the results of an asynchronous query. The server holds the
@@ -285,27 +367,24 @@ func (h *Handler) Execute(ctx context.Context, req ExecuteRequest) (*Response, e
 // true, the poll requests metric-metadata enrichment so the final SUCCEEDED
 // response carries displayName/description/unit — it must match the enrichment
 // requested on the originating execute call.
+//
+// Like Execute, Poll accumulates the full result in memory; see PollStream for a bounded-memory alternative.
 func (h *Handler) Poll(ctx context.Context, requestToken string, timeoutMs int64, enrich bool) (*Response, error) {
-	var result Response
-
-	httpReq := h.client.HTTP().R().SetContext(ctx).
-		SetQueryParam("request-token", requestToken).
-		SetQueryParam("request-timeout-milliseconds", fmt.Sprintf("%d", timeoutMs)).
-		SetResult(&result)
-	if enrich {
-		httpReq.SetQueryParam("enrich", enrichMetricMetadataParam)
-	}
-	h.applyHeaders(httpReq)
-
-	resp, err := httpReq.Get(basePath + ":poll")
+	acc := &recordAccumulator{}
+	resp, err := h.pollRaw(ctx, requestToken, timeoutMs, enrich, acc.sink())
 	if err != nil {
-		return nil, fmt.Errorf("failed to poll query: %w", err)
+		return nil, err
 	}
-	if resp.IsError() {
-		return nil, httpclient.NewAPIError(resp.StatusCode(), resp.Status(), resp.String())
-	}
+	acc.applyTo(resp)
+	return resp, nil
+}
 
-	return &result, nil
+// orEmpty returns records unchanged when non-nil, else a non-nil empty slice (preserves the presence marker).
+func orEmpty(records []map[string]interface{}) []map[string]interface{} {
+	if records == nil {
+		return []map[string]interface{}{}
+	}
+	return records
 }
 
 // Cancel sends a best-effort cancellation request for a running query.
@@ -391,11 +470,38 @@ func (h *Handler) ExecuteAndPoll(ctx context.Context, req ExecuteRequest, onUnau
 // ExecuteAndPollOptions), notably an OnUpdate callback for surfacing progress
 // and preview results while the query is still running.
 func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequest, opts ExecuteAndPollOptions) (*Response, error) {
+	return h.executeAndPoll(ctx, req, opts, nil)
+}
+
+// executeAndPoll drives execute + the poll loop. stream is nil for the
+// accumulating contract; a non-nil stream delivers the terminal response's rows
+// to the callback instead (see ExecuteAndPollStream).
+func (h *Handler) executeAndPoll(ctx context.Context, req ExecuteRequest, opts ExecuteAndPollOptions, stream func(map[string]interface{}) error) (*Response, error) {
 	onUnauthorized := opts.OnUnauthorized
-	// Use an independent context for the initial execute so we always get the
-	// request token back even if the caller cancels mid-flight.
-	execCtx, execCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// A streamed call still owes OnUpdate its preview snapshots; only then are
+	// a still-running response's rows held (see terminalGate).
+	keepPreview := stream != nil && req.EnablePreview && opts.OnUpdate != nil
+
+	// A caller that is already gone gets nothing started on its behalf.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// The initial execute derives from the caller's context (values, and
+	// cancellation after a grace period). It is not aborted the instant the
+	// caller cancels: that would discard the request token of a query Grail
+	// may already have started, leaving it running with nothing able to cancel
+	// it. The server holds the execute for at most RequestTimeoutMilliseconds
+	// (5s by default), so the token normally arrives within the grace and the
+	// query is cancelled on the backend below; the grace only bounds an
+	// execute that stalls.
+	execCtx, execCancel := context.WithTimeout(context.WithoutCancel(ctx), executeTimeout)
 	defer execCancel()
+	stopGrace := context.AfterFunc(ctx, func() {
+		grace := time.AfterFunc(executeCancelGrace, execCancel)
+		context.AfterFunc(execCtx, func() { grace.Stop() })
+	})
+	defer stopGrace()
 
 	// Ensure the execute request uses the server-side long-poll timeout so the
 	// backend returns promptly for the poll loop.
@@ -406,13 +512,13 @@ func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequ
 		req.PollingPromiseSeconds = defaultPollingPromiseSeconds
 	}
 
-	result, err := h.Execute(execCtx, req)
+	result, err := h.executeFor(execCtx, req, stream, keepPreview)
 	if err != nil {
 		// A 401 on the initial execute gets the same one-shot refresh the
 		// poll loop has — long-lived processes outlive the first
 		// bearer token, and without this every query after expiry fails
 		// terminally even though a refresher is wired.
-		if isUnauthorized(err) && onUnauthorized != nil {
+		if isUnauthorized(err) && onUnauthorized != nil && ctx.Err() == nil {
 			newToken, refreshErr := onUnauthorized()
 			if refreshErr != nil {
 				return nil, fmt.Errorf("execute returned 401 (%v) and token refresh failed: %w", err, refreshErr)
@@ -420,7 +526,7 @@ func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequ
 			if newToken != "" {
 				h.client.SetToken(newToken)
 			}
-			result, err = h.Execute(execCtx, req)
+			result, err = h.executeFor(execCtx, req, stream, keepPreview)
 		}
 		if err != nil {
 			return nil, err
@@ -435,19 +541,29 @@ func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequ
 		return nil, ctx.Err()
 	}
 
-	// If query completed synchronously, return. NOT_STARTED is a queued query
-	// on a congested tenant — terminal-looking but in-flight; returning it here
-	// would hand the caller the raw {"state":"NOT_STARTED"} envelope as a
-	// success (observed live: three leaks in a row on a busy dev tenant).
-	if result.State != "RUNNING" && result.State != "NOT_STARTED" {
+	// Only SUCCEEDED is a success. Every other state that carries a request
+	// token is polled: NOT_STARTED is a queued query on a congested tenant
+	// (observed live: it once leaked as a success three times in a row), and a
+	// state Grail adds later is more likely in flight than terminal.
+	if result.State == StateSucceeded {
 		return result, nil
 	}
-
+	if isFailedState(result.State) {
+		return result, &StateError{State: result.State}
+	}
+	// A response that declares no state at all is the pre-state synchronous
+	// shape GetRecords still supports — it carries the records directly.
+	if result.State == "" && result.RequestToken == "" {
+		return result, nil
+	}
 	if result.RequestToken == "" {
-		return nil, fmt.Errorf("query is running but no request token provided")
+		if isRunningState(result.State) {
+			return nil, fmt.Errorf("query is running but no request token provided")
+		}
+		return result, &StateError{State: result.State}
 	}
 
-	// Surface the initial RUNNING state (progress may already be non-zero).
+	// Surface the initial state (progress may already be non-zero).
 	emitUpdate(opts.OnUpdate, req.EnablePreview, result)
 
 	// Poll loop.
@@ -455,18 +571,26 @@ func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequ
 	defer pollCancel()
 
 	tokenJustRefreshed := false
+	// lastState is the state of the most recent response. A state that is
+	// neither terminal nor running is polled like RUNNING; lastState is what
+	// names it if the poll deadline expires first.
+	lastState := result.State
 
 	for {
 		select {
 		case <-pollCtx.Done():
 			if ctx.Err() != nil {
 				_ = h.Cancel(context.Background(), result.RequestToken)
+				return nil, ctx.Err()
+			}
+			if !isRunningState(lastState) {
+				return nil, &StateError{State: lastState, TimedOut: true}
 			}
 			return nil, pollCtx.Err()
 		default:
 		}
 
-		pollResult, pollErr := h.Poll(pollCtx, result.RequestToken, pollRequestTimeoutMs, req.EnrichMetricMetadata)
+		pollResult, pollErr := h.pollFor(pollCtx, result.RequestToken, pollRequestTimeoutMs, req.EnrichMetricMetadata, stream, keepPreview)
 		if pollErr != nil {
 			// On 401, try the onUnauthorized callback once per consecutive failure.
 			var apiErr *httpclient.APIError
@@ -486,23 +610,101 @@ func (h *Handler) ExecuteAndPollWithOptions(ctx context.Context, req ExecuteRequ
 				_ = h.Cancel(context.Background(), result.RequestToken)
 				return nil, ctx.Err()
 			}
+			if pollCtx.Err() != nil && !isRunningState(lastState) {
+				return nil, &StateError{State: lastState, TimedOut: true}
+			}
+			// An expired or already consumed result is reported as HTTP 410
+			// (QUERY_GONE), not as a RESULT_GONE state — verified against a
+			// live tenant. It is the one failure a caller can fix by simply
+			// running the query again, so it gets the retryable error.
+			if errors.As(pollErr, &apiErr) && apiErr.StatusCode == http.StatusGone {
+				return nil, &StateError{State: StateResultGone}
+			}
 			return nil, pollErr
 		}
 
 		tokenJustRefreshed = false // reset after success
 
-		switch pollResult.State {
-		case "SUCCEEDED":
+		switch {
+		case pollResult.State == StateSucceeded:
 			return pollResult, nil
-		case "FAILED":
-			return pollResult, fmt.Errorf("query execution failed")
-		case "RUNNING", "NOT_STARTED":
-			emitUpdate(opts.OnUpdate, req.EnablePreview, pollResult)
-			continue
+		case isFailedState(pollResult.State):
+			// A Ctrl-C that races a completing poll must stay a cancellation,
+			// not turn into the CANCELLED state error. The query is already
+			// terminal, so there is nothing left to cancel on the backend.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return pollResult, &StateError{State: pollResult.State}
 		default:
-			return pollResult, nil
+			lastState = pollResult.State
+			emitUpdate(opts.OnUpdate, req.EnablePreview, pollResult)
+			if !isRunningState(lastState) {
+				// The server may answer an unrecognized state at once instead
+				// of holding the poll, so wait before the next round trip.
+				select {
+				case <-pollCtx.Done():
+				case <-time.After(unknownStatePollInterval):
+				}
+			}
 		}
 	}
+}
+
+// Query states reported by the Query API.
+const (
+	StateSucceeded  = "SUCCEEDED"
+	StateFailed     = "FAILED"
+	StateCancelled  = "CANCELLED"
+	StateResultGone = "RESULT_GONE"
+	StateRunning    = "RUNNING"
+	StateNotStarted = "NOT_STARTED"
+)
+
+// unknownStatePollInterval is the wait between polls of a query in a state
+// dtctl does not recognize.
+const unknownStatePollInterval = time.Second
+
+func isRunningState(state string) bool {
+	return state == StateRunning || state == StateNotStarted
+}
+
+func isFailedState(state string) bool {
+	return state == StateFailed || state == StateCancelled || state == StateResultGone
+}
+
+// StateError reports a query that did not end in SUCCEEDED: a known failure
+// state, or a state dtctl does not recognize.
+//
+// What a live tenant actually does, probed against the Query API: it answers
+// RUNNING, NOT_STARTED and SUCCEEDED as states, and reports failures over HTTP
+// instead — 400 with a typed DQL error for a query it rejects, 410 QUERY_GONE
+// for a result that expired, was consumed, or was cancelled. A scan limit, a
+// fetch timeout and an oversized result all come back as a truncated success
+// rather than as a failure. FAILED and CANCELLED were never observed as
+// states, so the branches for them are the forward-compatible half of this
+// type: the states the API documents, handled in case they do appear.
+type StateError struct {
+	State string
+	// TimedOut reports that the query never left State before the poll
+	// deadline expired. It may well still be running on the backend, so the
+	// message must not claim the state itself was terminal.
+	TimedOut bool
+}
+
+func (e *StateError) Error() string {
+	switch e.State {
+	case StateFailed:
+		return "query execution failed"
+	case StateCancelled:
+		return "query was cancelled on the server"
+	case StateResultGone:
+		return "query result expired before it was fetched"
+	}
+	if e.TimedOut {
+		return fmt.Sprintf("query was still in unrecognized state %q when the poll deadline expired", e.State)
+	}
+	return fmt.Sprintf("unrecognized query state %q", e.State)
 }
 
 // GetNotifications returns notifications from the response, checking both
@@ -513,6 +715,20 @@ func (r *Response) GetNotifications() []Notification {
 	}
 	if r.Result != nil && r.Result.Metadata != nil && r.Result.Metadata.Grail != nil {
 		return r.Result.Metadata.Grail.Notifications
+	}
+	return nil
+}
+
+// GetApproximations returns the approximations Grail reported for the result,
+// checking both top-level and result-level metadata (in the same order as
+// GetNotifications). Nil means the result is not approximate in any declared
+// way.
+func (r *Response) GetApproximations() []string {
+	if r.Metadata != nil && r.Metadata.Grail != nil && len(r.Metadata.Grail.Approximations) > 0 {
+		return r.Metadata.Grail.Approximations
+	}
+	if r.Result != nil && r.Result.Metadata != nil && r.Result.Metadata.Grail != nil && len(r.Result.Metadata.Grail.Approximations) > 0 {
+		return r.Result.Metadata.Grail.Approximations
 	}
 	return nil
 }
@@ -613,6 +829,8 @@ func parseError(statusCode int, body []byte) error {
 			ErrorType:  apiErr.Error.Details.ErrorType,
 			Detail:     apiErr.Error.Details.ErrorMessage,
 			Arguments:  apiErr.Error.Details.Arguments,
+			Query:      apiErr.Error.Details.QueryString,
+			Position:   apiErr.Error.Details.SyntaxErrorPosition,
 		}
 	}
 	// Keep the fallback typed: callers branch on QueryError.StatusCode (the
@@ -627,6 +845,12 @@ type QueryError struct {
 	ErrorType  string
 	Detail     string
 	Arguments  []string
+	// Query is the query the backend parsed, and Position the offending span
+	// within it (1-based line/column, end inclusive). Both are empty when the
+	// backend reported no position, e.g. for errors that are not about the
+	// query text.
+	Query    string
+	Position *SyntaxPosition
 }
 
 func (e *QueryError) Error() string {

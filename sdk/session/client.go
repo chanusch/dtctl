@@ -2,8 +2,6 @@ package session
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +14,8 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/sdk/agentmode"
 	sdkauth "github.com/dynatrace-oss/dtctl/sdk/auth"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
+	"github.com/dynatrace-oss/dtctl/sdk/urls"
 )
 
 // defaultUserAgentProduct identifies clients whose builder did not set an
@@ -67,22 +67,51 @@ func NewClientFromConfig(cfg *Config, opts ...ClientOption) (*Client, error) {
 		return nil, err
 	}
 
+	// Auto-discovered local configs must target a bare Dynatrace environment
+	// origin: https, an allowlisted host, and no userinfo, path, query or
+	// fragment. That prevents a rogue .dtctl.yaml from sending tokens to an
+	// arbitrary or non-TLS destination, and it is the same rule Load applies
+	// before adopting a ${VAR} environment (Config.resolveLocalEnvironments) —
+	// re-checked here because the value may also come from a hand-built config.
+	// Inline tokens remain unsupported regardless.
+	envURL := ctx.Environment
+	if cfg.IsLocal() {
+		// A ${VAR} environment that Load did not resolve is still the literal
+		// reference, which the origin check can only describe as a malformed
+		// URL. Report the reference instead — an unset variable is the first
+		// thing a developer hits with a freshly cloned .dtctl.yaml.
+		if cfg.EnvironmentUnresolved(cfg.CurrentContext) {
+			return nil, fmt.Errorf(
+				"local config %q: context %q has environment %q, which did not resolve to a Dynatrace "+
+					"environment URL — the environment must be a literal URL, or a single variable "+
+					"reference holding the whole URL "+
+					"(e.g. environment: ${DT_ENVIRONMENT_URL} with "+
+					"DT_ENVIRONMENT_URL=https://abc12345.apps.dynatrace.com)",
+				cfg.LocalConfigPath(), cfg.CurrentContext, envURL)
+		}
+		if err := urls.IsDynatraceEnvironmentOrigin(envURL); err != nil {
+			return nil, fmt.Errorf(
+				"local config %q: %w — use --config or DTCTL_CONFIG",
+				cfg.LocalConfigPath(), err)
+		}
+	}
+
 	// Use OAuth-aware token retrieval (supports both OAuth and API tokens)
 	token, err := GetTokenWithOAuthSupport(cfg, ctx.TokenRef)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := NewClient(ctx.Environment, token, opts...)
+	c, err := NewClient(envURL, token, opts...)
 	if err != nil {
 		return nil, err
 	}
 	// OAuth access tokens are short-lived JWTs; a long-running invocation
 	// (watch, workflow polling) outlives them. Re-resolve on 401 so the
 	// session survives token expiry instead of surfacing "JWT token expired".
-	environment, tokenRef := ctx.Environment, ctx.TokenRef
+	tokenRef := ctx.TokenRef
 	c.EnableTokenRefresh(func(rejected string) (string, error) {
-		return RefreshedTokenForContext(cfg, environment, tokenRef, rejected)
+		return RefreshedTokenForContext(cfg, envURL, tokenRef, rejected)
 	})
 	return c, nil
 }
@@ -97,14 +126,6 @@ func NewForTesting(baseURL, token string) (*Client, error) {
 	c.http.SetRetryCount(0)
 	return c, nil
 }
-
-// noopRestyLogger discards all resty-internal log output.
-// Error information is surfaced through returned error values, not internal logs.
-type noopRestyLogger struct{}
-
-func (noopRestyLogger) Errorf(string, ...interface{}) {}
-func (noopRestyLogger) Warnf(string, ...interface{})  {}
-func (noopRestyLogger) Debugf(string, ...interface{}) {}
 
 // NewClient creates a new client with base URL and token.
 func NewClient(baseURL, token string, opts ...ClientOption) (*Client, error) {
@@ -126,15 +147,30 @@ func NewClient(baseURL, token string, opts ...ClientOption) (*Client, error) {
 		userAgent += aiSuffix
 	}
 
-	httpClient := resty.New().
-		SetLogger(&noopRestyLogger{}).
+	// resty.New still builds this client's own http.Client and cookie jar;
+	// only the RoundTripper is swapped for the process-wide pool, so a
+	// long-lived consumer reuses upstream connections across clients (see
+	// sharedTransport).
+	//
+	// The logger is what turns a refused transport setter into an error:
+	// see transportSetterGuard.
+	guard := &transportSetterGuard{}
+	httpClient := httpclient.GuardRequestPaths(resty.New()).
+		SetTransport(sharedTransport).
+		SetLogger(guard).
+		OnBeforeRequest(guard.checkRequest).
 		SetBaseURL(baseURL).
 		SetAuthScheme("Bearer").
 		SetAuthToken(token).
+		// Same retry policy as httpclient.New: only requests that are safe to
+		// resend (idempotent methods, 429, 503 with Retry-After, failed dials).
 		SetRetryCount(3).
 		SetRetryWaitTime(1*time.Second).
 		SetRetryMaxWaitTime(10*time.Second).
-		AddRetryCondition(isRetryable).
+		// Multipart parts are one-shot readers (document create/update), so
+		// rewind them before a retry or the resent part is empty.
+		SetRetryResetReaders(true).
+		AddRetryCondition(httpclient.IsRetryable).
 		SetTimeout(6*time.Minute). // Allow for long-running Grail queries (up to 5 min)
 		SetHeader("User-Agent", userAgent).
 		SetHeader("Accept-Encoding", "gzip")
@@ -146,23 +182,18 @@ func NewClient(baseURL, token string, opts ...ClientOption) (*Client, error) {
 	}, nil
 }
 
-// isRetryable determines if a request should be retried
-func isRetryable(r *resty.Response, err error) bool {
-	if err != nil {
-		// Don't retry on context cancellation — retrying is pointless when the context
-		// is already done (covers both user-initiated cancellation and deadline exceeded).
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return false
-		}
-		return true
-	}
-
-	// Retry on rate limit or server errors
-	statusCode := r.StatusCode()
-	return statusCode == 429 || statusCode >= 500
-}
-
-// HTTP returns the underlying resty client
+// HTTP returns the underlying resty client.
+//
+// Its RoundTripper is the process-wide connection pool shared by every Client
+// (see sharedTransport), so resty's in-place transport setters — SetProxy,
+// RemoveProxy, SetTLSClientConfig, SetCertificates, SetRootCertificate and
+// friends — cannot apply to it. Calling one does not change the pool; instead
+// every later request on this client fails with ErrSharedTransportSetting, so
+// a required proxy or TLS setting is never silently dropped. To give one
+// client its own TLS or proxy settings, install a private transport first and
+// then call the setters:
+//
+//	c.HTTP().SetTransport(session.NewTransport()).SetProxy(proxyURL)
 func (c *Client) HTTP() *resty.Client {
 	return c.http
 }

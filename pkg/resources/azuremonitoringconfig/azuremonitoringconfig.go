@@ -2,13 +2,20 @@ package azuremonitoringconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/client"
+	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
+
+// ErrNotFound reports that no monitoring configuration matches the name. It
+// separates "absent" from "the lookup itself failed", which apply needs to
+// decide between create and abort.
+var ErrNotFound = errors.New("monitoring config not found")
 
 const (
 	ExtensionName      = "com.dynatrace.extension.da-azure"
@@ -72,29 +79,43 @@ type Value struct {
 	Version     string      `json:"version"`
 	Azure       AzureConfig `json:"azure"`
 	FeatureSets []string    `json:"featureSets"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type AzureConfig struct {
-	DeploymentScope           string            `json:"deploymentScope,omitempty"`
-	SubscriptionFilteringMode string            `json:"subscriptionFilteringMode,omitempty"`
-	Credentials               []Credential      `json:"credentials"`
-	LocationFiltering         []string          `json:"locationFiltering,omitempty"`
-	ConfigurationMode         string            `json:"configurationMode,omitempty"`
-	DeploymentMode            string            `json:"deploymentMode,omitempty"`
-	TagFiltering              []TagFilter       `json:"tagFiltering,omitempty"`
-	TagEnrichment             []string          `json:"tagEnrichment,omitempty"`
-	DtLabelsEnrichment        map[string]Labels `json:"dtLabelsEnrichment,omitempty"`
+	UseIngestEnrichmentConfig          *bool             `json:"useIngestEnrichmentConfig,omitempty" yaml:"useIngestEnrichmentConfig,omitempty"`
+	IngestEnrichmentMigrationProcessed *bool             `json:"ingestEnrichmentMigrationProcessed,omitempty" yaml:"ingestEnrichmentMigrationProcessed,omitempty"`
+	DeploymentScope                    string            `json:"deploymentScope,omitempty"`
+	SubscriptionFilteringMode          string            `json:"subscriptionFilteringMode,omitempty"`
+	Credentials                        []Credential      `json:"credentials"`
+	LocationFiltering                  []string          `json:"locationFiltering,omitempty"`
+	ConfigurationMode                  string            `json:"configurationMode,omitempty"`
+	DeploymentMode                     string            `json:"deploymentMode,omitempty"`
+	TagFiltering                       []TagFilter       `json:"tagFiltering,omitempty"`
+	TagEnrichment                      []string          `json:"tagEnrichment,omitempty"`
+	DtLabelsEnrichment                 map[string]Labels `json:"dtLabelsEnrichment,omitempty"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type TagFilter struct {
 	Key       string `json:"key"`
 	Value     string `json:"value"`
 	Condition string `json:"condition"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type Labels struct {
 	Literal string `json:"literal,omitempty"`
 	TagKey  string `json:"tagKey,omitempty"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type Credential struct {
@@ -103,6 +124,9 @@ type Credential struct {
 	ConnectionId       string `json:"connectionId"`
 	ServicePrincipalId string `json:"servicePrincipalId"`
 	Type               string `json:"type"`
+
+	// Extra keeps the members this struct does not model (unknown_fields.go).
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
 type ListResponse struct {
@@ -173,7 +197,7 @@ func (h *Handler) ListAvailableLocations() ([]Location, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, httpclient.PathSegment(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -208,7 +232,7 @@ func (h *Handler) ListAvailableFeatureSets() ([]FeatureSet, error) {
 	}
 
 	var schema ExtensionSchemaResponse
-	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, latestVersion)
+	schemaEndpoint := fmt.Sprintf(ExtensionSchemaAPI, httpclient.PathSegment(latestVersion))
 	resp, err := h.client.HTTP().R().SetResult(&schema).Get(schemaEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch extension schema: %w", err)
@@ -251,7 +275,7 @@ func (h *Handler) GetRaw(id string) ([]byte, error) {
 func (h *Handler) Get(id string) (*AzureMonitoringConfig, error) {
 	var result AzureMonitoringConfig
 	req := h.client.HTTP().R().SetResult(&result)
-	resp, err := req.Get(fmt.Sprintf("%s/%s", BaseAPI, id))
+	resp, err := req.Get(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +339,7 @@ func (h *Handler) FindByName(name string) (*AzureMonitoringConfig, error) {
 			return &items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("azure monitoring config with description %q not found", name)
+	return nil, fmt.Errorf("azure monitoring config with description %q: %w", name, ErrNotFound)
 }
 
 // Create creates a new Azure monitoring config
@@ -344,7 +368,7 @@ func (h *Handler) Update(id string, data []byte) (*AzureMonitoringConfig, error)
 		SetHeader("Content-Type", "application/json").
 		SetBody(data).
 		SetResult(&result).
-		Put(fmt.Sprintf("%s/%s", BaseAPI, id))
+		Put(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update azure_monitoring_config: %w", err)
@@ -358,7 +382,7 @@ func (h *Handler) Update(id string, data []byte) (*AzureMonitoringConfig, error)
 
 // Delete deletes an Azure monitoring config by ID
 func (h *Handler) Delete(id string) error {
-	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", BaseAPI, id))
+	resp, err := h.client.HTTP().R().Delete(fmt.Sprintf("%s/%s", BaseAPI, httpclient.PathSegment(id)))
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,8 @@ var allMetadataFields = map[string]bool{
 	"scannedBytes":              true,
 	"scannedDataPoints":         true,
 	"sampled":                   true,
+	"approximations":            true,
+	"notifications":             true,
 	"queryId":                   true,
 	"dqlVersion":                true,
 	"query":                     true,
@@ -33,6 +35,8 @@ type QueryMetadata struct {
 	ScannedBytes              int64              `json:"scannedBytes,omitempty" yaml:"scannedBytes,omitempty"`
 	ScannedDataPoints         int64              `json:"scannedDataPoints,omitempty" yaml:"scannedDataPoints,omitempty"`
 	Sampled                   bool               `json:"sampled,omitempty" yaml:"sampled,omitempty"`
+	Approximations            []string           `json:"approximations,omitempty" yaml:"approximations,omitempty"`
+	Notifications             []MetadataNotice   `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	QueryID                   string             `json:"queryId,omitempty" yaml:"queryId,omitempty"`
 	DQLVersion                string             `json:"dqlVersion,omitempty" yaml:"dqlVersion,omitempty"`
 	Query                     string             `json:"query,omitempty" yaml:"query,omitempty"`
@@ -42,6 +46,17 @@ type QueryMetadata struct {
 	AnalysisTimeframe         *MetadataTimeframe `json:"analysisTimeframe,omitempty" yaml:"analysisTimeframe,omitempty"`
 	Contributions             *MetadataContribs  `json:"contributions,omitempty" yaml:"contributions,omitempty"`
 	Metrics                   []MetricInfo       `json:"metrics,omitempty" yaml:"metrics,omitempty"`
+}
+
+// MetadataNotice is one of Grail's notifications on a query result, of any
+// severity. The WARNING and ERROR ones are also printed to stderr (or carried
+// in the agent envelope's warnings); this is the full, unfiltered list.
+type MetadataNotice struct {
+	Severity         string   `json:"severity,omitempty" yaml:"severity,omitempty"`
+	NotificationType string   `json:"notificationType,omitempty" yaml:"notificationType,omitempty"`
+	Message          string   `json:"message,omitempty" yaml:"message,omitempty"`
+	MessageFormat    string   `json:"messageFormat,omitempty" yaml:"messageFormat,omitempty"`
+	Arguments        []string `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 }
 
 // MetricInfo describes a single metric referenced in a timeseries query result.
@@ -78,7 +93,8 @@ type MetadataBucket struct {
 
 // ParseMetadataFields parses the --metadata flag value into a field list.
 // "all" (the NoOptDefVal) returns ["all"]. A comma-separated string like
-// "executionTimeMilliseconds,scannedRecords" returns individual field names.
+// "executionTimeMilliseconds,scannedRecords" returns individual field names;
+// the "minimal" selector may appear among them (see ExpandMetadataFields).
 // Returns an error if any field name is not recognized.
 func ParseMetadataFields(val string) ([]string, error) {
 	val = strings.TrimSpace(val)
@@ -96,7 +112,7 @@ func ParseMetadataFields(val string) ([]string, error) {
 		if f == "" {
 			continue
 		}
-		if !allMetadataFields[f] {
+		if !allMetadataFields[f] && f != MetadataMinimal {
 			unknown = append(unknown, f)
 		} else {
 			fields = append(fields, f)
@@ -104,9 +120,10 @@ func ParseMetadataFields(val string) ([]string, error) {
 	}
 	if len(unknown) > 0 {
 		valid := ValidMetadataFieldNames()
-		return nil, fmt.Errorf("unknown metadata field(s): %s; valid fields: %s",
+		return nil, fmt.Errorf("unknown metadata field(s): %s; valid fields: %s (or the %q selector)",
 			strings.Join(unknown, ", "),
-			strings.Join(valid, ", "))
+			strings.Join(valid, ", "),
+			MetadataMinimal)
 	}
 	if len(fields) == 0 {
 		return nil, nil
@@ -185,6 +202,12 @@ func MetadataToMap(meta *QueryMetadata, fields []string) interface{} {
 	}
 	if set["sampled"] {
 		m["sampled"] = meta.Sampled
+	}
+	if set["approximations"] {
+		m["approximations"] = meta.Approximations
+	}
+	if set["notifications"] {
+		m["notifications"] = meta.Notifications
 	}
 	if set["queryId"] {
 		m["queryId"] = meta.QueryID
@@ -286,6 +309,21 @@ func FormatMetadataFooter(m *QueryMetadata, fields []string) string {
 		}
 	}
 
+	// Approximations and notifications: printed only when present, so the
+	// footer of an exact, notice-free result is unchanged.
+	if hasField("approximations", fields) && len(m.Approximations) > 0 {
+		b.WriteString("Approximations:\n")
+		for _, a := range m.Approximations {
+			b.WriteString(fmt.Sprintf("  %s\n", collapseWhitespace(a)))
+		}
+	}
+	if hasField("notifications", fields) && len(m.Notifications) > 0 {
+		b.WriteString("Notifications:\n")
+		for _, n := range m.Notifications {
+			b.WriteString(fmt.Sprintf("  %s\n", formatNotice(n)))
+		}
+	}
+
 	// Contributions
 	if hasField("contributions", fields) && m.Contributions != nil && len(m.Contributions.Buckets) > 0 {
 		b.WriteString("Contributions:\n")
@@ -370,6 +408,16 @@ func FormatMetadataCSVComments(m *QueryMetadata, fields []string) string {
 	if hasField("sampled", fields) {
 		b.WriteString(fmt.Sprintf("# sampled: %t\n", m.Sampled))
 	}
+	if hasField("approximations", fields) {
+		for _, a := range m.Approximations {
+			b.WriteString(fmt.Sprintf("# approximation: %s\n", collapseWhitespace(a)))
+		}
+	}
+	if hasField("notifications", fields) {
+		for _, n := range m.Notifications {
+			b.WriteString(fmt.Sprintf("# notification: %s\n", formatNotice(n)))
+		}
+	}
 
 	if hasField("contributions", fields) && m.Contributions != nil && len(m.Contributions.Buckets) > 0 {
 		for _, bucket := range m.Contributions.Buckets {
@@ -389,6 +437,23 @@ func FormatMetadataCSVComments(m *QueryMetadata, fields []string) string {
 	}
 
 	return b.String()
+}
+
+// formatNotice renders a notification as one line: "SEVERITY [TYPE] message".
+// An empty severity reads as INFO, as it does on stderr.
+func formatNotice(n MetadataNotice) string {
+	severity := n.Severity
+	if severity == "" {
+		severity = "INFO"
+	}
+	line := severity
+	if n.NotificationType != "" {
+		line += " [" + n.NotificationType + "]"
+	}
+	if n.Message != "" {
+		line += " " + collapseWhitespace(n.Message)
+	}
+	return line
 }
 
 // formatBytes formats a byte count as a human-readable string.

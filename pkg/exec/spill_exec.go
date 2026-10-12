@@ -1,15 +1,41 @@
 package exec
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 )
+
+// Compaction advice (#578). Compaction is the agent-mode default, so when it
+// changed what the agent sees it says how to read it and how to opt out.
+const (
+	compactRowsPrefix        = "# rows compacted: "
+	compactSummarySuggestion = "# summary compacted: one-value columns in result.constant, all-null in result.null_columns; --compact=false for the full profile"
+)
+
+// compactRowsSuggestion says how to read compacted rows, naming the columns moved to result.constant.
+func compactRowsSuggestion(c *output.Compaction) string {
+	s := compactRowsPrefix + "row = result.constant + record, absent key = null; --compact=false for full rows"
+	if c == nil || len(c.Constant) == 0 {
+		return s
+	}
+	keys := make([]string, 0, len(c.Constant))
+	for k := range c.Constant {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > 8 {
+		keys = append(keys[:8], "…")
+	}
+	return compactRowsPrefix + "the same in every row, so listed once in result.constant: " + strings.Join(keys, ", ") +
+		"; row = result.constant + record, absent key = null; --compact=false for full rows"
+}
 
 const userPathPrivacyWarning = "spill path is a user-chosen location and opts out of the managed privacy guarantees (no TTL pruning, no per-context partitioning, best-effort 0600 only); you own its lifetime"
 
@@ -26,7 +52,7 @@ func (e *DQLExecutor) trySpill(query string, result *DQLQueryResponse, records [
 	if !handled {
 		return false, nil
 	}
-	return true, output.EncodeEnvelope(os.Stdout, resp)
+	return true, output.EncodeEnvelope(e.outW(), resp)
 }
 
 // buildSpillResponse makes the inline-vs-spill decision (D5/D19-buffered),
@@ -39,38 +65,26 @@ func (e *DQLExecutor) trySpill(query string, result *DQLQueryResponse, records [
 // the Response and leaves emission to the caller, while its only side effect
 // (writing to disk) is fully controlled via opts.Spill (ToPath / Dir).
 func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse, records []map[string]interface{}, displayFormat string, opts DQLExecuteOptions) (output.Response, bool, error) {
-	// Measure serialised size against the chosen display encoding (D24).
-	measured, encoding := output.MeasureSerializedBytes(records, displayFormat)
+	compaction := compactionFor(records, opts)
 
+	// Inline output carries the rows compacted and then with long values
+	// clipped (--max-field-chars), so that is what the spill decision measures,
+	// in the display encoding (D24); a spill file keeps the full rows.
+	inline := newInlineRows(records, compaction, opts.MaxFieldChars)
+	inline.types = emittedTypes(result, opts)
+	measured, encoding := measureInline(inline, displayFormat, inlineLayout(e.outW(), opts, displayFormat))
 	switch opts.Spill.Mode {
 	case SpillAuto:
 		if measured <= opts.Spill.Threshold {
-			return e.inlineRecordsResponse(query, result, records, measured, encoding, opts) // inline
+			return e.inlineRecordsResponse(query, result, inline, measured, encoding, output.IsAutoFormat(displayFormat), opts) // inline
 		}
 	case SpillAlways:
 		// always spill
 	default:
-		return e.inlineRecordsResponse(query, result, records, measured, encoding, opts) // never / unknown -> inline
+		return e.inlineRecordsResponse(query, result, inline, measured, encoding, output.IsAutoFormat(displayFormat), opts) // never / unknown -> inline
 	}
 
-	// Provenance from Grail metadata.
-	g := result.GetMetadata()
-	sampled := false
-	canonical := query
-	var tfStart, tfEnd string
-	if g != nil {
-		sampled = g.Sampled
-		if g.CanonicalQuery != "" {
-			canonical = g.CanonicalQuery
-		}
-		if g.AnalysisTimeframe != nil {
-			tfStart, tfEnd = g.AnalysisTimeframe.Start, g.AnalysisTimeframe.End
-		}
-	}
-	samplingRatio := 0.0
-	if sampled {
-		samplingRatio = opts.DefaultSamplingRatio
-	}
+	sampled, canonical, tfStart, tfEnd, samplingRatio := spillProvenanceOf(query, result, opts)
 
 	format, targetPath, baseDir, managed, summaryOnly, warnings, err := e.resolveSpillTarget(canonical, tfStart, tfEnd, opts)
 	if err != nil {
@@ -91,12 +105,20 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 	}
 
 	cols := output.ComputeColumnStats(records, sampled, output.DefaultStatsTopK, output.DefaultStatsMaxDistinct)
-	sampleRows := output.SampleRows(records, output.DefaultSampleRows)
+
+	// Compaction collapses the single-value columns into one map and names the
+	// all-null ones instead of profiling them; the sample rows drop both. The
+	// file and the sidecar below still carry every column.
+	summaryCols, sampleSource := cols, records
+	if compaction != nil {
+		summaryCols, sampleSource = compaction.FilterColumns(cols), compaction.Records
+	}
+	sampleRows := output.SampleRows(sampleSource, output.DefaultSampleRows)
 
 	// The in-context envelope carries a size-bounded view of the columns (the
 	// most-populated ones, by null count); the on-disk sidecar written below
 	// keeps the full per-column set so nothing is lost for later inspection.
-	envCols, omittedCols := output.CapColumnsForEnvelope(cols, output.DefaultMaxSummaryColumns)
+	envCols, omittedCols := output.CapColumnsForEnvelope(summaryCols, output.DefaultMaxSummaryColumns)
 
 	manifest := &output.ResultFileManifest{
 		Query:         query,
@@ -110,22 +132,15 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 	}
 	manifest.SetStats(envCols, sampled)
 	manifest.ColumnsOmitted = omittedCols
+	manifest.Types = inline.types
+	if compaction != nil {
+		manifest.Constant = compaction.EnvelopeConstant()
+		manifest.NullColumns = compaction.NullColumns
+	}
 
 	decided := "spilled"
 	if !summaryOnly {
-		written, werr := output.WriteSpillFile(targetPath, func(w io.Writer) error {
-			// Types is only consumed by the Parquet writer (to build a faithful
-			// columnar schema from the DQL column types); the json/jsonl/csv writers
-			// ignore it. It is nil unless --include-types was requested, which the
-			// command layer auto-enables for a Parquet spill — otherwise the Parquet
-			// writer falls back to value inference.
-			p := output.NewPrinterWithOpts(output.PrinterOptions{
-				Format: format,
-				Writer: w,
-				Types:  columnTypeMappings(result),
-			})
-			return p.PrintList(records)
-		})
+		written, werr := writeResultFile(targetPath, format, query, result, records, cols, sampled, samplingRatio, managed, baseDir, opts)
 		if werr != nil {
 			if opts.Spill.ToPath != "" {
 				// The caller pinned an explicit destination; a failure there is a
@@ -141,28 +156,6 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 			manifest.Kind = output.KindResultFile
 			manifest.Path = targetPath
 			manifest.Bytes = written
-
-			// Sidecar manifest (D34), written last so its presence implies a
-			// complete data file. Best-effort: a sidecar failure must not fail
-			// the query.
-			_ = output.WriteSidecar(targetPath, &output.SidecarManifest{
-				EnvelopeVersion: output.EnvelopeVersion,
-				Format:          format,
-				Sampled:         sampled,
-				SamplingRatio:   samplingRatio,
-				TenantID:        opts.TenantID,
-				ContextName:     opts.ContextName,
-				Query:           query,
-				Rows:            len(records),
-				Bytes:           written,
-				Created:         time.Now().UTC(),
-				Columns:         cols,
-			})
-
-			// Opportunistic, throttled TTL prune of the managed cache (D11).
-			if managed && baseDir != "" {
-				output.PruneOldSpills(baseDir, opts.Spill.TTL)
-			}
 		}
 	}
 
@@ -171,35 +164,9 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		decided = "summary-only"
 	}
 
-	suggestions := spillSuggestions(query, manifest.Kind, summaryReason)
-	// Now that `dtctl inspect` ships (Layer 2), point at concrete, bounded
-	// row-access follow-ups on the spilled file — the calls an agent cannot
-	// satisfy from the summary it just received (INSPECT IN4/D30).
-	if manifest.Kind == output.KindResultFile && manifest.Path != "" {
-		suggestions = append(suggestions,
-			"# for bounded row access without re-querying Grail: dtctl inspect "+manifest.Path+" --head 20 (also --tail, --page --offset N --limit M, --fields a,b)")
-	}
-	if n := len(omittedCols); n > 0 {
-		if manifest.Kind == output.KindResultFile {
-			suggestions = append(suggestions, fmt.Sprintf("# %d sparser columns were omitted from this summary to keep it compact; their names are in result.columns_omitted and full per-column stats are in the sidecar manifest next to the file", n))
-		} else {
-			// Summary-only: nothing was written, so there is no sidecar to point at.
-			suggestions = append(suggestions, fmt.Sprintf("# %d sparser columns were omitted from this summary to keep it compact; their names are in result.columns_omitted (the rows were not written to disk, so there is no sidecar manifest)", n))
-		}
-	}
-
-	// Surface query notifications (scan-limit truncation, result caps, timeouts,
-	// sampling) into the envelope. Their advice leads the suggestions because a
-	// PARTIAL result is more consequential to an agent than the spill/inspect
-	// follow-ups — an agent parsing stdout must learn the result is incomplete.
-	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
-	warnings = append(warnings, notifWarnings...)
-	suggestions = append(notifSuggestions, suggestions...)
-	scanWarnings, scanSuggestions := heavyScanAdvice(result)
-	warnings = append(warnings, scanWarnings...)
-	suggestions = append(suggestions, scanSuggestions...)
-	suggestions = append(suggestions, windowAdvice(query, records, opts)...)
-	suggestions = append(suggestions, lookbackAdvice(query)...)
+	emptyReason, emptySuggestions := e.emptyResultAdvice(query, result, records, opts)
+	adviceWarnings, suggestions := spillAdvice(query, result, manifest, summaryReason, len(omittedCols), compaction, emptySuggestions, opts)
+	warnings = append(warnings, adviceWarnings...)
 
 	total := len(records)
 	ctx := &output.ResponseContext{
@@ -212,6 +179,10 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		MeasuredEncoding: encoding,
 		Warnings:         warnings,
 		Suggestions:      suggestions,
+		EmptyReason:      emptyReason,
+	}
+	if opts.Decorate != nil {
+		opts.Decorate(ctx, result, records)
 	}
 
 	resp := output.Response{
@@ -219,9 +190,53 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          manifest,
 		Context:         ctx,
-		Metadata:        envelopeMetadata(result, opts),
+		Metadata:        envelopeMetadata(query, result, opts),
 	}
 	return resp, true, nil
+}
+
+// spillAdvice assembles the warnings and suggestions of a spilled or
+// summary-only envelope, after the ones the spill target itself produced. Both
+// the buffered and the streamed builder use it, so the two envelopes read the
+// same. emptySuggestions is the empty-result diagnosis, which only a buffered
+// result can have.
+func spillAdvice(query string, result *DQLQueryResponse, manifest *output.ResultFileManifest, summaryReason string, omittedCols int, compaction *output.Compaction, emptySuggestions []string, opts DQLExecuteOptions) (warnings, suggestions []string) {
+	suggestions = spillSuggestions(query, manifest.Kind, summaryReason)
+	// Now that `dtctl inspect` ships (Layer 2), point at concrete, bounded
+	// row-access follow-ups on the spilled file — the calls an agent cannot
+	// satisfy from the summary it just received (INSPECT IN4/D30).
+	if manifest.Kind == output.KindResultFile && manifest.Path != "" {
+		suggestions = append(suggestions,
+			"# for bounded row access without re-querying Grail: dtctl inspect "+manifest.Path+" --head 20 (also --tail, --page --offset N --limit M, --fields a,b)")
+	}
+	if omittedCols > 0 {
+		if manifest.Kind == output.KindResultFile {
+			suggestions = append(suggestions, fmt.Sprintf("# %d sparser columns were omitted from this summary to keep it compact; their names are in result.columns_omitted and full per-column stats are in the sidecar manifest next to the file", omittedCols))
+		} else {
+			// Summary-only: nothing was written, so there is no sidecar to point at.
+			suggestions = append(suggestions, fmt.Sprintf("# %d sparser columns were omitted from this summary to keep it compact; their names are in result.columns_omitted (the rows were not written to disk, so there is no sidecar manifest)", omittedCols))
+		}
+	}
+
+	// Surface query notifications (scan-limit truncation, result caps, timeouts,
+	// sampling) into the envelope. Their advice leads the suggestions because a
+	// PARTIAL result is more consequential to an agent than the spill/inspect
+	// follow-ups — an agent parsing stdout must learn the result is incomplete.
+	notifWarnings, notifSuggestions := queryNotificationAdvice(query, result.GetNotifications())
+	warnings = append(warnings, notifWarnings...)
+	warnings = append(warnings, approximationWarnings(result)...)
+	suggestions = append(notifSuggestions, suggestions...)
+	scanWarnings, scanSuggestions := heavyScanAdvice(result)
+	warnings = append(warnings, scanWarnings...)
+	suggestions = append(suggestions, scanSuggestions...)
+	suggestions = append(suggestions, emptySuggestions...)
+	suggestions = append(suggestions, lookbackAdvice(query)...)
+	suggestions = append(suggestions, metadataDefaultAdvice(query, extractQueryMetadata(result), opts, false)...)
+	if compaction != nil && compaction.Changed("json") {
+		suggestions = append(suggestions, compactSummarySuggestion)
+	}
+	suggestions = append(suggestions, seriesAdvice(opts)...)
+	return warnings, suggestions
 }
 
 // inlineRecordsResponse handles the inline (not-spilled) decision. In agent mode
@@ -236,87 +251,275 @@ func (e *DQLExecutor) buildSpillResponse(query string, result *DQLQueryResponse,
 // choice the caller already made that the envelope cannot carry:
 //   - a byte-oriented display encoding (-o csv/yaml/chart): a caller asking for
 //     those wants the bytes, not an envelope wrapping them.
-//   - a --jq transform: agent-mode jq already owns the output shape.
+//   - a --jq transform: printResults owns that shape via printAgentJQ, which
+//     wraps the filter output in this same envelope (#413).
 //
 // Outside agent mode an inline result is always a fall-through (a human wants the
 // table/CSV, not an envelope).
-func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryResponse, records []map[string]interface{}, measured int64, encoding string, opts DQLExecuteOptions) (output.Response, bool, error) {
-	// A --jq transform reshapes the result into something this envelope cannot
-	// describe, so it keeps its requested shape and falls through. So do the
-	// raw byte-oriented encodings (csv/yaml): an agent asking for those wants
-	// the bytes, not an envelope wrapping them.
+//
+// With auto (-o auto), encoding is the format output.ChooseAutoFormat picked
+// for these rows. csv and yaml then stay in the envelope too, encoded like
+// toon, because the agent asked for the cheapest encoding, not for raw bytes;
+// context.format names the choice. The rows are clipped (--max-field-chars)
+// before auto chooses and encodes them, so the choice fits what is emitted.
+func (e *DQLExecutor) inlineRecordsResponse(query string, result *DQLQueryResponse, rows inlineRows, measured int64, encoding string, auto bool, opts DQLExecuteOptions) (output.Response, bool, error) {
+	// A --jq transform reshapes the result into something this kind:"records"
+	// envelope cannot describe, so it falls through to printResults, which wraps
+	// the filter output in the same {ok, result, context} envelope (#413). So do
+	// the raw byte-oriented encodings (csv/yaml): an agent asking for those
+	// wants the bytes, not an envelope wrapping them.
 	if !opts.AgentMode || opts.JQFilter != "" {
 		return output.Response{}, false, nil
 	}
-
-	var res interface{}
-	var encodeWarning string
 	switch encoding {
-	case "json":
-		res = &output.InlineRecords{Kind: output.KindRecords, Records: records}
-	case "toon":
-		// `-o toon` keeps the envelope, with the rows encoded inside it. This is
-		// what makes the contract independent of result size: the same flags
-		// produce a `kind: "records"` envelope below the spill threshold and a
-		// `kind: "result-file"` envelope above it, so `ok`, `error.code` and
-		// `context` (heavy-scan warnings, suggestions) survive either way.
-		toonRows, err := output.MarshalTOON(records)
-		if err != nil {
-			encodeWarning = fmt.Sprintf("TOON encoding failed: %v; the rows were encoded as JSON instead", err)
-			res = &output.InlineRecords{Kind: output.KindRecords, Records: records}
-		} else {
-			res = &output.InlineRecordsEncoded{
-				Kind:     output.KindRecords,
-				Encoding: "toon",
-				Records:  toonRows,
-			}
+	case "json", "toon":
+	case "csv", "yaml":
+		if !auto {
+			return output.Response{}, false, nil
 		}
 	default:
 		return output.Response{}, false, nil
+	}
+	res, used, encodeWarning := inlineResult(encoding, auto, rows, len(rows.full))
+	if auto {
+		encoding = used
 	}
 
 	// Even an inline (small) result can be PARTIAL — a scan-limit stop can leave
 	// few rows. Surface the same notification advice so the agent isn't misled
 	// into treating a truncated scan as the complete answer.
-	notifWarnings, notifSuggestions := notificationAdvice(result.GetNotifications())
+	notifWarnings, notifSuggestions := queryNotificationAdvice(query, result.GetNotifications())
+	notifWarnings = append(notifWarnings, approximationWarnings(result)...)
 	scanWarnings, scanSuggestions := heavyScanAdvice(result)
 	notifWarnings = append(notifWarnings, scanWarnings...)
 	notifSuggestions = append(notifSuggestions, scanSuggestions...)
-	notifSuggestions = append(notifSuggestions, windowAdvice(query, records, opts)...)
+	emptyReason, emptySuggestions := e.emptyResultAdvice(query, result, rows.full, opts)
+	notifSuggestions = append(notifSuggestions, emptySuggestions...)
 	notifSuggestions = append(notifSuggestions, lookbackAdvice(query)...)
+	notifSuggestions = append(notifSuggestions, sampleAdvice(query, len(rows.full))...)
+	notifSuggestions = append(notifSuggestions, durationAdvice(query, result)...)
+	notifSuggestions = append(notifSuggestions, seriesAdvice(opts)...)
 	if encodeWarning != "" {
 		notifWarnings = append(notifWarnings, encodeWarning)
 	}
-
-	total := len(records)
-	ctx := &output.ResponseContext{
-		Verb:             "query",
-		Resource:         resourceFromQuery(query),
-		Total:            &total,
-		Decided:          "inline",
-		ThresholdBytes:   opts.Spill.Threshold,
-		MeasuredBytes:    measured,
-		MeasuredEncoding: encoding,
-		Warnings:         notifWarnings,
-		Suggestions:      notifSuggestions,
+	if auto && opts.AutoFormatByDefault && encoding != "json" {
+		notifSuggestions = append(notifSuggestions, output.AutoDefaultSuggestion(encoding))
 	}
-	return output.Response{
+	if rows.compaction != nil && rows.compaction.Changed(encoding) {
+		notifSuggestions = append(notifSuggestions, compactRowsSuggestion(rows.compaction))
+	}
+
+	total := len(rows.full)
+	ctx := &output.ResponseContext{
+		Verb:        "query",
+		Resource:    resourceFromQuery(query),
+		Total:       &total,
+		Decided:     "inline",
+		Warnings:    notifWarnings,
+		Suggestions: notifSuggestions,
+		EmptyReason: emptyReason,
+	}
+	// The threshold/measured sizes explain a spill decision; on an inline result
+	// they are debugging detail, which --metadata=minimal leaves to -v (#577).
+	dropSpillDebug := output.IsMinimalFields(opts.MetadataFields) && !opts.Verbose
+	if !dropSpillDebug {
+		ctx.ThresholdBytes = opts.Spill.Threshold
+		ctx.MeasuredBytes = measured
+		ctx.MeasuredEncoding = encoding
+	}
+	if auto {
+		ctx.Format = encoding
+	}
+	ctx.Suggestions = append(ctx.Suggestions, metadataDefaultAdvice(query, extractQueryMetadata(result), opts, dropSpillDebug)...)
+	if len(rows.clippedFields) > 0 {
+		ctx.MarkFieldsClipped(opts.MaxFieldChars, rows.clippedFields)
+		ctx.Suggestions = append(ctx.Suggestions, fieldClipSuggestion(opts.MaxFieldChars, rows.clippedFields))
+	}
+	if opts.Decorate != nil {
+		opts.Decorate(ctx, result, rows.full)
+	}
+	resp := output.Response{
 		OK:              true,
 		EnvelopeVersion: output.EnvelopeVersion,
 		Result:          res,
 		Context:         ctx,
-		Metadata:        envelopeMetadata(result, opts),
-	}, true, nil
+		Metadata:        envelopeMetadata(query, result, opts),
+	}
+	if opts.MaxOutputBytes > 0 {
+		resp = e.fitToBudget(query, result, resp, rows, encoding, auto, opts)
+	}
+	return resp, true, nil
+}
+
+// inlineResult builds the kind:"records" payload for the first k rows in the
+// given encoding and returns the encoding it actually used. `-o toon` keeps the
+// envelope, with the rows encoded inside it. This is what makes the contract
+// independent of result size: the same flags produce a `kind: "records"`
+// envelope below the spill threshold and a `kind: "result-file"` envelope above
+// it, so `ok`, `error.code` and `context` (heavy-scan warnings, suggestions)
+// survive either way. The constant map of a compacted result stays a JSON map
+// next to the rows whatever encodes them. With rechoose, a csv/yaml encoding is
+// the -o auto choice for the k rows, so a budget-cut prefix is encoded in the
+// format that suits it (a single row is yaml, not one-line csv); for all the
+// rows that is the choice measureInline made. Without it, csv/yaml encode the
+// k rows as given. An encoding failure falls back to native JSON and returns
+// the warning to surface.
+func inlineResult(encoding string, rechoose bool, rows inlineRows, k int) (interface{}, string, string) {
+	native := &output.InlineRecords{Kind: output.KindRecords, Constant: rows.constant, Records: rows.records[:k], Types: rows.types}
+	switch encoding {
+	case "toon":
+		toonRows, err := output.MarshalTOON(rows.forEncoding("toon")[:k])
+		if err != nil {
+			return native, "json", fmt.Sprintf("TOON encoding failed: %v; the rows were encoded as JSON instead", err)
+		}
+		return &output.InlineRecordsEncoded{Kind: output.KindRecords, Encoding: "toon", Constant: rows.constant, Records: toonRows, Types: rows.types}, "toon", ""
+	case "csv", "yaml":
+		format := encoding
+		var encoded string
+		var err error
+		switch {
+		case rechoose && rows.compaction == nil:
+			var choice output.AutoChoice
+			choice, encoded, err = output.MarshalAuto(rows.records[:k])
+			format = choice.Format
+		case rechoose:
+			// Chosen on the compacted table, as measureInline does.
+			format = output.ChooseAutoFormat(rows.tabular[:k]).Format
+			fallthrough
+		default:
+			if format != "json" {
+				encoded, err = encodeRows(rows.forEncoding(format)[:k], format)
+			}
+		}
+		if err != nil {
+			return native, "json", fmt.Sprintf("-o auto encoding failed: %v; the rows were encoded as JSON instead", err)
+		}
+		if format == "json" {
+			return native, "json", ""
+		}
+		return &output.InlineRecordsEncoded{Kind: output.KindRecords, Encoding: format, Constant: rows.constant, Records: encoded, Types: rows.types}, format, ""
+	}
+	return native, "json", ""
+}
+
+// emittedTypes returns the DQL type block for the agent envelope's result
+// payload, or nil. Like the plain json/yaml output it is emitted only for an
+// explicit --include-types (EmitTypes): --typed and Parquet request the types
+// to consume them, not to print them.
+func emittedTypes(result *DQLQueryResponse, opts DQLExecuteOptions) interface{} {
+	if !opts.EmitTypes {
+		return nil
+	}
+	if types := result.GetTypes(); len(types) > 0 {
+		return types
+	}
+	return nil
+}
+
+// compactionFor returns the compacted view of records when opts asks for it, or
+// nil. A --jq program addresses the full rows, so it never sees a compaction.
+func compactionFor(records []map[string]interface{}, opts DQLExecuteOptions) *output.Compaction {
+	if !opts.Compact || opts.JQFilter != "" {
+		return nil
+	}
+	c := output.CompactRecords(records)
+	return &c
+}
+
+// inlineLayout is the JSON layout this invocation would print its inline rows
+// in, which is what the spill decision has to measure (#570). In agent mode the
+// rows go into an envelope and EnvelopeRecordsLayout asks the question
+// EncodeEnvelope does, of the same writer: compact when piped, as for an agent
+// (up to about 2.5x smaller than the same rows indented, for narrow rows), and indented at the depth
+// of result.records on a terminal. Outside agent mode printRecords prints
+// {"records": [...]} with the indenting JSON printer, or for -o jsonl the
+// rows one compact line each with JSONLPrinter. stdout is the writer this
+// invocation prints to, not the process's: the layout depends on whether it is
+// a terminal.
+func inlineLayout(stdout io.Writer, opts DQLExecuteOptions, format string) output.JSONLayout {
+	if opts.AgentMode {
+		return output.EnvelopeRecordsLayout(stdout)
+	}
+	if strings.ToLower(strings.TrimSpace(format)) == "jsonl" {
+		return output.JSONLinesLayout
+	}
+	return output.IndentedJSONLayout(1)
+}
+
+// measureInline measures the inline payload in the display encoding, laid out
+// as the writer will print it (see inlineLayout): the rows as emitted plus,
+// when compacting, the constant map they share, and the type block when one
+// rides along. Both sit beside the rows, at their depth. Under -o auto with
+// compaction the encoding is chosen from the compacted table (constant and
+// all-null columns removed), since that is what gets encoded; the returned
+// encoding is the chosen one.
+func measureInline(rows inlineRows, format string, layout output.JSONLayout) (int64, string) {
+	if layout.Lines {
+		// printRecords prints -o jsonl rows as they came: not compacted, and
+		// with no constant map or type block, which a line format has no place
+		// for.
+		return output.MeasureSerializedBytes(rows.full, format, layout)
+	}
+	n, enc := measureInlineRows(rows, format, layout)
+	if rows.types != nil {
+		// Like constant, the type block is always native JSON in the envelope.
+		m, _ := output.MeasureSerializedBytes(rows.types, "json", layout)
+		n += m
+	}
+	return n, enc
+}
+
+func measureInlineRows(rows inlineRows, format string, layout output.JSONLayout) (int64, string) {
+	if rows.compaction == nil {
+		return output.MeasureSerializedBytes(rows.records, format, layout)
+	}
+	if output.IsAutoFormat(format) {
+		format = output.ChooseAutoFormat(rows.tabular).Format
+	}
+	n, enc := output.MeasureSerializedBytes(rows.forEncoding(output.NormalizeMeasureEncoding(format)), format, layout)
+	if len(rows.constant) > 0 {
+		// constant is always a JSON map in the envelope, whatever encodes the rows.
+		m, _ := output.MeasureSerializedBytes(rows.constant, "json", layout)
+		n += m
+	}
+	return n, enc
+}
+
+// compactedRows returns the rows c emits in the given encoding: without nulls,
+// except under the tabular encodings (TOON, CSV), which keep partial nulls so
+// the rows stay one table (see output.Compaction.Tabular).
+func compactedRows(c *output.Compaction, records []map[string]interface{}, encoding string) []map[string]interface{} {
+	if tabularEncoding(encoding) {
+		return c.Tabular(records)
+	}
+	return c.Records
+}
+
+// tabularEncoding reports whether encoding prints rows as one table (TOON,
+// CSV), which needs every row to carry the same columns.
+func tabularEncoding(encoding string) bool {
+	return encoding == "toon" || encoding == "csv"
+}
+
+// encodeRows renders rows in format (csv or yaml) as a string for an
+// InlineRecordsEncoded payload.
+func encodeRows(rows []map[string]interface{}, format string) (string, error) {
+	var buf bytes.Buffer
+	p := output.NewPrinterWithOpts(output.PrinterOptions{Format: format, Writer: &buf})
+	if err := p.PrintList(rows); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 // envelopeMetadata returns the Grail/metrics query metadata for the agent
 // envelope's top-level `metadata` key, honoring --metadata field selection. It
 // returns nil when metadata was not requested (MetadataFields empty) or the
 // response carried none, so the key is omitted rather than emitted empty. Agent
-// mode defaults --metadata to "all", so an agent gets the metadata by default
+// mode defaults --metadata to "minimal", so an agent gets the lean metadata
 // without asking for it; the same placement is used for inline and spilled
-// results.
-func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interface{} {
+// results. --metadata=minimal is resolved against the response here.
+func envelopeMetadata(query string, result *DQLQueryResponse, opts DQLExecuteOptions) interface{} {
 	if len(opts.MetadataFields) == 0 {
 		return nil
 	}
@@ -324,7 +527,53 @@ func envelopeMetadata(result *DQLQueryResponse, opts DQLExecuteOptions) interfac
 	if meta == nil {
 		return nil
 	}
-	return output.MetadataToMap(meta, opts.MetadataFields)
+	return output.MetadataToMap(meta, resolveMetadataFields(query, meta, opts))
+}
+
+// resolveMetadataFields expands the --metadata=minimal selector into the
+// concrete fields worth reporting for this response (output.ExpandMetadataFields).
+// Any other selection is returned unchanged.
+func resolveMetadataFields(query string, meta *output.QueryMetadata, opts DQLExecuteOptions) []string {
+	return output.ExpandMetadataFields(meta, opts.MetadataFields, usesDefaultWindow(query, opts))
+}
+
+// windowParamRe matches a window parameter name. DQL parameter names are
+// case-insensitive and allow whitespace before the colon (`FROM :` is valid).
+var windowParamRe = regexp.MustCompile(`(?i)\b(?:from|to|timeframe)\s*:`)
+
+// metadataDefaultSuggestion names the opt-out from agent mode's default
+// --metadata=minimal. Kept short: it rides on most agent query results.
+const metadataDefaultSuggestion = "# metadata trimmed by default; -M=all for the full block"
+
+// metadataDefaultAdvice returns the opt-out suggestion when agent mode applied
+// --metadata=minimal by default and that actually dropped output: a metadata
+// field the response carried, or (droppedSpillDebug) the inline spill
+// measurements. An explicit -M=minimal asked for exactly this, so it gets none.
+func metadataDefaultAdvice(query string, meta *output.QueryMetadata, opts DQLExecuteOptions, droppedSpillDebug bool) []string {
+	if !opts.MetadataDefaulted || !output.IsMinimalFields(opts.MetadataFields) {
+		return nil
+	}
+	if droppedSpillDebug || output.MetadataOmitsFields(meta, resolveMetadataFields(query, meta, opts)) {
+		return []string{metadataDefaultSuggestion}
+	}
+	return nil
+}
+
+// usesDefaultWindow reports whether the query ran on the server's default
+// analysis window: neither the query text nor --default-timeframe-* named one.
+// Only then is the analysis timeframe news to the caller.
+func usesDefaultWindow(query string, opts DQLExecuteOptions) bool {
+	if opts.DefaultTimeframeStart != "" || opts.DefaultTimeframeEnd != "" {
+		return false
+	}
+	// Only DQL code can name a window: strings, backtick identifiers and
+	// comments are blanked first. A query the stripper cannot read is treated
+	// as windowless, so the timeframe is kept rather than wrongly dropped.
+	code, ok := stripDQLLiterals(query)
+	if !ok {
+		return true
+	}
+	return !windowParamRe.MatchString(code)
 }
 
 // resolveSpillTarget decides the format, destination path, and base dir for a

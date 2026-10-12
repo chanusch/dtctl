@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/dynatrace-oss/dtctl/pkg/exec"
 )
@@ -25,6 +28,7 @@ func TestIsSupportedQueryOutputFormat(t *testing.T) {
 		{name: "toon", format: "toon", want: true},
 		{name: "jsonl", format: "jsonl", want: true},
 		{name: "parquet", format: "parquet", want: true},
+		{name: "auto", format: "auto", want: true},
 		{name: "trimmed and mixed case", format: " Json ", want: true},
 		{name: "unsupported", format: "xml", want: false},
 	}
@@ -275,7 +279,7 @@ func TestParseSegmentsFile(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got, err := parseSegmentsFile(path)
+			got, err := parseSegmentsFile(context.Background(), path)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("parseSegmentsFile() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -307,7 +311,7 @@ func TestParseSegmentsFile(t *testing.T) {
 }
 
 func TestParseSegmentsFile_NotFound(t *testing.T) {
-	_, err := parseSegmentsFile("/nonexistent/path/segments.yaml")
+	_, err := parseSegmentsFile(context.Background(), "/nonexistent/path/segments.yaml")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -655,6 +659,131 @@ func TestApplySegmentVars(t *testing.T) {
 			}
 			if tt.check != nil {
 				tt.check(t, got)
+			}
+		})
+	}
+}
+
+// TestAgentResultFormat pins the agent-mode default: with no -o, agent mode
+// resolves to -o auto; any explicit -o wins, and outside agent mode nothing
+// changes.
+func TestAgentResultFormat(t *testing.T) {
+	origFormat, origAgent := outputFormat(context.Background()), agentMode(context.Background())
+	flag := rootCmd.PersistentFlags().Lookup("output")
+	origChanged := flag.Changed
+	defer func() { gFlags.outputFormat, gFlags.agentMode, flag.Changed = origFormat, origAgent, origChanged }()
+
+	cases := []struct {
+		name        string
+		agent       bool
+		changed     bool
+		format      string
+		want        string
+		wantDefault bool
+	}{
+		{"agent mode, no -o", true, false, "table", "auto", true},
+		{"agent mode, explicit -o json", true, true, "json", "json", false},
+		{"agent mode, explicit -o toon", true, true, "toon", "toon", false},
+		{"not agent mode", false, false, "table", "table", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gFlags.agentMode, flag.Changed, gFlags.outputFormat = c.agent, c.changed, c.format
+			got, byDefault := agentResultFormat(context.Background())
+			if got != c.want || byDefault != c.wantDefault {
+				t.Errorf("agentResultFormat() = (%q, %v), want (%q, %v)", got, byDefault, c.want, c.wantDefault)
+			}
+		})
+	}
+}
+
+// TestAgentModeDefaultsCompose pins that the two agent-mode defaults stack: with
+// no flags, query resolves to -o auto AND compacts; --compact=false restores
+// the uncompacted -o auto output; an explicit -o csv keeps the rows verbatim
+// (a CSV has no place for a constant map) without a warning.
+func TestAgentModeDefaultsCompose(t *testing.T) {
+	origFormat, origAgent := outputFormat(context.Background()), agentMode(context.Background())
+	flag := rootCmd.PersistentFlags().Lookup("output")
+	origChanged := flag.Changed
+	defer func() { gFlags.outputFormat, gFlags.agentMode, flag.Changed = origFormat, origAgent, origChanged }()
+
+	cases := []struct {
+		name        string
+		args        []string
+		outputFlag  string // "" = no -o
+		wantFormat  string
+		wantDefault bool
+		wantCompact bool
+	}{
+		{name: "no flags", wantFormat: "auto", wantDefault: true, wantCompact: true},
+		{name: "--compact=false", args: []string{"--compact=false"}, wantFormat: "auto", wantDefault: true, wantCompact: false},
+		{name: "explicit -o json", outputFlag: "json", wantFormat: "json", wantCompact: true},
+		{name: "explicit -o csv", outputFlag: "csv", wantFormat: "csv", wantCompact: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gFlags.agentMode = true
+			gFlags.outputFormat, flag.Changed = "table", false
+			if c.outputFlag != "" {
+				gFlags.outputFormat, flag.Changed = c.outputFlag, true
+			}
+			cmd := &cobra.Command{Use: "q"}
+			cmd.Flags().Bool("compact", false, "")
+			if err := cmd.Flags().Parse(c.args); err != nil {
+				t.Fatal(err)
+			}
+			format, byDefault := agentResultFormat(context.Background())
+			compact, warn := resolveQueryCompact(cmd, agentMode(context.Background()), format)
+			if format != c.wantFormat || byDefault != c.wantDefault || compact != c.wantCompact || warn != "" {
+				t.Errorf("got (format %q, byDefault %v, compact %v, warn %q), want (%q, %v, %v, \"\")",
+					format, byDefault, compact, warn, c.wantFormat, c.wantDefault, c.wantCompact)
+			}
+		})
+	}
+}
+
+func TestResolveQueryCompact(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		agent    bool
+		format   string
+		want     bool
+		wantWarn bool
+	}{
+		// Agent mode is token-optimal by default; outside it nothing changes.
+		{name: "agent mode defaults on", agent: true, format: "", want: true},
+		{name: "agent mode toon defaults on", agent: true, format: "toon", want: true},
+		{name: "agent mode yaml defaults on", agent: true, format: "yaml", want: true},
+		{name: "agent mode auto defaults on", agent: true, format: "auto", want: true},
+		{name: "plain auto opt-in", args: []string{"--compact"}, format: "AUTO", want: true},
+		{name: "plain auto defaults off", format: "auto", want: false},
+		{name: "agent mode opt-in", args: []string{"--compact"}, agent: true, format: "", want: true},
+		{name: "agent mode toon opt-in", args: []string{"--compact"}, agent: true, format: "toon", want: true},
+		{name: "agent mode explicit off", args: []string{"--compact=false"}, agent: true, format: "json", want: false},
+		{name: "plain json defaults off", format: "json", want: false},
+		{name: "plain json opt-in", args: []string{"--compact"}, format: "json", want: true},
+		{name: "plain yaml opt-in", args: []string{"--compact"}, format: "yaml", want: true},
+		// A table has no place for a constant map; say so instead of silently ignoring it.
+		{name: "plain table opt-in warns", args: []string{"--compact"}, format: "table", want: false, wantWarn: true},
+		{name: "csv opt-in warns", args: []string{"--compact"}, agent: true, format: "csv", want: false, wantWarn: true},
+		// The agent-mode default is silent where it cannot apply.
+		{name: "agent csv default is silently off", agent: true, format: "csv", want: false},
+		{name: "agent jsonl default is silently off", agent: true, format: "jsonl", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "q"}
+			cmd.Flags().Bool("compact", false, "")
+			if err := cmd.Flags().Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			got, warn := resolveQueryCompact(cmd, tt.agent, tt.format)
+			if got != tt.want {
+				t.Errorf("compact = %v, want %v", got, tt.want)
+			}
+			if (warn != "") != tt.wantWarn {
+				t.Errorf("warning = %q, wantWarn %v", warn, tt.wantWarn)
 			}
 		})
 	}

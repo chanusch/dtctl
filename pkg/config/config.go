@@ -22,7 +22,9 @@ type (
 	ContextOptions = session.ContextOptions
 	Hooks          = session.Hooks
 	SpillConfig    = session.SpillConfig
+	QueryLimits    = session.QueryLimits
 	SafetyLevel    = session.SafetyLevel
+	StabilityLevel = session.StabilityLevel
 	AliasEntry     = session.AliasEntry
 	AliasFile      = session.AliasFile
 )
@@ -88,6 +90,9 @@ func CheckKeyring() error                             { return session.CheckKeyr
 func IsKeyringAvailable() bool                        { return session.IsKeyringAvailable() }
 func KeyringBackend() string                          { return session.KeyringBackend() }
 func IsFileTokenStorage() bool                        { return session.IsFileTokenStorage() }
+func IsKeyringAbsent(err error) bool                  { return session.IsKeyringAbsent(err) }
+func PersistFileTokenStorage() error                  { return session.PersistFileTokenStorage() }
+func FileTokenStorageConsentPath() string             { return session.FileTokenStorageConsentPath() }
 func IsOAuthStorageAvailable() bool                   { return session.IsOAuthStorageAvailable() }
 func OAuthStorageBackend() string                     { return session.OAuthStorageBackend() }
 func MigrateTokensToKeyring(cfg *Config) (int, error) { return session.MigrateTokensToKeyring(cfg) }
@@ -112,3 +117,26 @@ const (
 )
 
 func BuiltinProfileNames() []string { return session.BuiltinProfileNames() }
+
+// Stability tiers (what dtctl promises about a command's shape over time) —
+// the ordered axis and its config/environment resolution live with the Config
+// type in sdk/session; declaration and *enforcement* stay in pkg/stability and
+// cmd/.
+const (
+	StabilityDevelopment  = session.StabilityDevelopment
+	StabilityExperimental = session.StabilityExperimental
+	StabilityStable       = session.StabilityStable
+	DefaultStabilityLevel = session.DefaultStabilityLevel
+	DefaultMinStability   = session.DefaultMinStability
+
+	MinStabilityEnvVar = session.MinStabilityEnvVar
+	DevelopmentEnvVar  = session.DevelopmentEnvVar
+	NoDeprecatedEnvVar = session.NoDeprecatedEnvVar
+	DevelopmentAll     = session.DevelopmentAll
+)
+
+// ValidStabilityLevels returns the stability levels in ascending order of promise.
+func ValidStabilityLevels() []StabilityLevel { return session.ValidStabilityLevels() }
+
+// ParseStabilityLevel validates and normalizes a user-written stability level.
+func ParseStabilityLevel(s string) (StabilityLevel, error) { return session.ParseStabilityLevel(s) }

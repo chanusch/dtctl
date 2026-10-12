@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -67,11 +68,11 @@ func TestExecWorkflowRunE_SendsWorkflowInputRequest(t *testing.T) {
 	configPath, cleanup := testutil.SetupTestConfig(t, ms.URL)
 	defer cleanup()
 
-	origCfgFile := cfgFile
+	origCfgFile := cfgFile(context.Background())
 	defer func() {
-		cfgFile = origCfgFile
+		gFlags.cfgFile = origCfgFile
 	}()
-	cfgFile = configPath
+	gFlags.cfgFile = configPath
 
 	cmd := newExecWorkflowRunCmdForTest()
 	_ = cmd.Flags().Set("input", `{"enabled":true,"count":2}`)
@@ -108,11 +109,11 @@ func TestExecWorkflowRunE_SetsMonitorQueryParamWhenWaiting(t *testing.T) {
 	configPath, cleanup := testutil.SetupTestConfig(t, ms.URL)
 	defer cleanup()
 
-	origCfgFile := cfgFile
+	origCfgFile := cfgFile(context.Background())
 	defer func() {
-		cfgFile = origCfgFile
+		gFlags.cfgFile = origCfgFile
 	}()
-	cfgFile = configPath
+	gFlags.cfgFile = configPath
 
 	cmd := newExecWorkflowRunCmdForTest()
 	_ = cmd.Flags().Set("wait", "true")
@@ -154,11 +155,11 @@ func TestExecWorkflowRunE_SendsLegacyParamsCompatibilityRequestAndWarning(t *tes
 	configPath, cleanup := testutil.SetupTestConfig(t, ms.URL)
 	defer cleanup()
 
-	origCfgFile := cfgFile
+	origCfgFile := cfgFile(context.Background())
 	defer func() {
-		cfgFile = origCfgFile
+		gFlags.cfgFile = origCfgFile
 	}()
-	cfgFile = configPath
+	gFlags.cfgFile = configPath
 
 	cmd := newExecWorkflowRunCmdForTest()
 	var stderr bytes.Buffer
@@ -247,6 +248,22 @@ func TestBuildWorkflowExecutionRequest_RejectsInvalidWorkflowInput(t *testing.T)
 				t.Fatalf("expected error containing %q, got %v", tt.wantErrContains, err)
 			}
 		})
+	}
+}
+
+func TestExecWorkflowInputFlagSurvivesFlagReset(t *testing.T) {
+	// resetFlagSet restores defaults via flag.Value.Set(DefValue); for
+	// singleUseStringValue that must go through Reset, or the flag is marked
+	// as already provided and every real --input is rejected.
+	cmd := newExecWorkflowRunCmdForTest()
+	resetFlagSet(cmd.Flags())
+
+	if err := cmd.ParseFlags([]string{"--input", `{"matcher":"Control-M"}`}); err != nil {
+		t.Fatalf("ParseFlags() after resetFlagSet error = %v", err)
+	}
+	got, _ := cmd.Flags().GetString("input")
+	if got != `{"matcher":"Control-M"}` {
+		t.Fatalf("expected --input value to be retained, got %q", got)
 	}
 }
 

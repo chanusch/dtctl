@@ -28,9 +28,12 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/resources/iam"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherlqltodql"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/matcherverify"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/platform"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/platformtoken"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/previewprocessor"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/schedulingrule"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/segment"
+	"github.com/dynatrace-oss/dtctl/pkg/resources/serviceuser"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/settings"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/slo"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
@@ -690,6 +693,28 @@ func TestGolden_GetDocuments(t *testing.T) {
 				t.Fatalf("PrintList failed: %v", err)
 			}
 			assertGolden(t, "get/documents-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_ClaimEnvironmentShare(t *testing.T) {
+	claim := &document.EnvironmentShareClaim{
+		DocumentID:   "doc-1234",
+		Name:         "Prod overview",
+		DocumentType: "dashboard",
+		Access:       []string{"read"},
+		AccessLevel:  "read",
+		URL:          "https://abc.apps.dynatrace.com/ui/apps/dynatrace.dashboards/dashboard/doc-1234",
+	}
+
+	for _, format := range []string{"table", "wide", "json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(claim); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "claim/environment-share-"+format, buf.String())
 		})
 	}
 }
@@ -1516,6 +1541,24 @@ func describeGCPMonitoringConfigFixture() gcpmonitoringconfig.GCPMonitoringConfi
 						ServiceAccount: "sa-monitor@project-id.iam.gserviceaccount.com",
 					},
 				},
+				Resources: []gcpmonitoringconfig.MetricSource{
+					{
+						ResourceType:         "pubsub_topic",
+						AutoDiscoveryEnabled: false,
+						Metrics: []gcpmonitoringconfig.Metric{
+							{
+								Name:         "pubsub.googleapis.com/topic/send_request_count",
+								MetricLabels: []string{"response_class"},
+								Type:         "CUSTOM",
+							},
+						},
+					},
+					{
+						ResourceType:                   "gce_instance",
+						AutoDiscoveryEnabled:           true,
+						AutodiscoveryExcludeMetricType: []string{"compute.googleapis.com/instance/disk/*"},
+					},
+				},
 			},
 			FeatureSets: []string{"default"},
 		},
@@ -1601,6 +1644,127 @@ func TestGolden_DescribeApp(t *testing.T) {
 				t.Fatalf("Print failed: %v", err)
 			}
 			assertGolden(t, "describe/app-"+name, buf.String())
+		})
+	}
+}
+
+// intentFixtures covers both declaration forms (#517): a property declared
+// with singular `schema`, one with plural `schemas` (accepted alias keys with
+// per-key patterns), a list-form type, an undeclared type (empty, never a
+// made-up "string"), an empty `schemas` map, and a deprecated intent.
+func intentFixtures() []appengine.Intent {
+	thingPattern := "^(?:THING-|WIDGET-)[0-9A-F]{16}$"
+	return []appengine.Intent{
+		{
+			AppID:       "example.app",
+			AppName:     "Example App",
+			IntentID:    "view-thing",
+			Name:        "View thing",
+			Description: "Open a thing",
+			FullName:    "example.app/view-thing",
+			Properties: map[string]appengine.IntentProperty{
+				"thing": {
+					Type:         "string",
+					Types:        []string{"string"},
+					Required:     true,
+					Description:  "The thing to open",
+					AcceptedKeys: []string{"dt.entity", "thing"},
+					Schemas: map[string]interface{}{
+						"dt.entity": map[string]interface{}{"type": "string", "pattern": thingPattern},
+						"thing":     map[string]interface{}{"type": "string", "pattern": thingPattern},
+					},
+				},
+				"tags": {
+					Type:         "string|array",
+					Types:        []string{"string", "array"},
+					AcceptedKeys: []string{"tags"},
+					Schema: map[string]interface{}{
+						"type":  []interface{}{"string", "array"},
+						"items": map[string]interface{}{"type": "string"},
+					},
+				},
+				"note": {
+					AcceptedKeys: []string{"note"},
+				},
+			},
+			RequiredProps: []string{"thing"},
+		},
+		{
+			AppID:              "example.app",
+			AppName:            "Example App",
+			IntentID:           "view-thing-legacy",
+			Description:        "Open a thing (legacy)",
+			FullName:           "example.app/view-thing-legacy",
+			Deprecated:         true,
+			DeprecationMessage: "Use view-thing instead",
+			Properties: map[string]appengine.IntentProperty{
+				"id": {
+					Type:         "string",
+					Types:        []string{"string"},
+					Required:     true,
+					Format:       "uuid",
+					AcceptedKeys: []string{"id"},
+					Schema:       map[string]interface{}{"type": "string", "format": "uuid"},
+				},
+				"unused": {
+					Required:     true,
+					AcceptedKeys: []string{},
+					Schemas:      map[string]interface{}{},
+				},
+			},
+			RequiredProps: []string{"id", "unused"},
+		},
+	}
+}
+
+func TestGolden_GetIntents(t *testing.T) {
+	intents := intentFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"csv":   "csv",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(intents); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/intents-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_FindIntents(t *testing.T) {
+	matches := []appengine.IntentMatch{
+		{
+			Intent:       intentFixtures()[0],
+			MatchQuality: 33.33333333333333,
+			MatchedProps: []string{"thing"},
+			MatchedKeys:  map[string]string{"thing": "dt.entity"},
+		},
+	}
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(matches); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/intent-matches-"+name, buf.String())
 		})
 	}
 }
@@ -2115,6 +2279,60 @@ func TestGolden_QueryDQL_Metadata_TOON(t *testing.T) {
 	})
 }
 
+// approximateMetadataFixture is a synthetic response Grail qualified: an
+// approximation and an advisory notification on a successful result (#415).
+func approximateMetadataFixture() *QueryMetadata {
+	return &QueryMetadata{
+		ExecutionTimeMilliseconds: 12,
+		ScannedRecords:            1,
+		Sampled:                   true,
+		QueryID:                   "00000000-0000-4000-8000-000000000415",
+		Approximations:            []string{"~ on content: substring match, not token match"},
+		Notifications: []MetadataNotice{
+			{Severity: "INFO", NotificationType: "EXAMPLE_NOTICE", Message: "an informational advisory"},
+		},
+	}
+}
+
+func TestGolden_QueryDQL_Metadata_Approximations(t *testing.T) {
+	records := dqlRecordsFixture()
+	meta := approximateMetadataFixture()
+
+	ResetColorCache()
+	SetPlainMode(true)
+	defer ResetColorCache()
+
+	for _, format := range []string{"json", "yaml"} {
+		t.Run(format, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"records":  records,
+				"metadata": MetadataToMap(meta, []string{"all"}),
+			}
+			var buf bytes.Buffer
+			if err := NewPrinterWithWriter(format, &buf).Print(payload); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "query/dql-metadata-approximations-"+format, buf.String())
+		})
+	}
+
+	t.Run("table", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := NewPrinterWithWriter("table", &buf).PrintList(records); err != nil {
+			t.Fatalf("PrintList failed: %v", err)
+		}
+		assertGolden(t, "query/dql-metadata-approximations-table", buf.String()+FormatMetadataFooter(meta, nil))
+	})
+
+	t.Run("csv", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := NewPrinterWithWriter("csv", &buf).PrintList(records); err != nil {
+			t.Fatalf("PrintList failed: %v", err)
+		}
+		assertGolden(t, "query/dql-metadata-approximations-csv", FormatMetadataCSVComments(meta, nil)+buf.String())
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Golden tests: empty results
 // ---------------------------------------------------------------------------
@@ -2315,6 +2533,24 @@ func TestGolden_AgentErrorGeneric(t *testing.T) {
 		t.Fatalf("PrintError failed: %v", err)
 	}
 	assertGolden(t, "errors/generic-error-agent", buf.String())
+}
+
+func TestGolden_AgentErrorQueryPosition(t *testing.T) {
+	var buf bytes.Buffer
+	detail := &ErrorDetail{
+		Code:       "parse_error",
+		Message:    "query failed (PARSE_ERROR): `by` isn't allowed here.",
+		StatusCode: 400,
+		Position:   &ErrorPosition{Line: 1, Column: 32, EndLine: 1, EndColumn: 33},
+		Snippet:    "fetch logs | summarize count() by service.name\n                               ^^",
+		Suggestions: []string{
+			"group with the by: parameter, by:{field, …}, not a trailing by keyword: dtctl query 'fetch logs | summarize count(), by:{service.name}'",
+		},
+	}
+	if err := PrintError(&buf, detail); err != nil {
+		t.Fatalf("PrintError failed: %v", err)
+	}
+	assertGolden(t, "errors/query-position-agent", buf.String())
 }
 
 // ---------------------------------------------------------------------------
@@ -2974,4 +3210,283 @@ func TestGolden_DescribeAPIOperations(t *testing.T) {
 			assertGolden(t, "describe/api-operations-"+name, buf.String())
 		})
 	}
+}
+
+func schedulingRuleFixtures() []schedulingrule.SchedulingRule {
+	return []schedulingrule.SchedulingRule{
+		{
+			ID:          "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+			Title:       "Business Hours",
+			RuleType:    "rrule",
+			Description: "Monday to Friday",
+			Version:     3,
+			RRule: map[string]interface{}{
+				"freq":      "WEEKLY",
+				"datestart": "2026-01-05",
+				"byday":     []interface{}{"MO", "TU", "WE", "TH", "FR"},
+			},
+			ModificationInfo: &schedulingrule.ModificationInfo{
+				CreatedBy:        "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+				CreatedTime:      "2026-01-05T08:00:00.000Z",
+				LastModifiedBy:   "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+				LastModifiedTime: "2026-02-11T10:30:00.000Z",
+			},
+		},
+		{
+			ID:               "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+			Title:            "Maintenance Window",
+			RuleType:         "grouping",
+			BusinessCalendar: "c3d4e5f6-a7b8-4c9d-8e0f-2a3b4c5d6e7f",
+			Version:          1,
+			GroupingRule: map[string]interface{}{
+				"combine": []interface{}{"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"},
+			},
+			ModificationInfo: &schedulingrule.ModificationInfo{
+				CreatedBy:        "8b9c0d1e-2f3a-4b5c-9d0e-1f2a3b4c5d6e",
+				CreatedTime:      "2026-01-06T09:15:00.000Z",
+				LastModifiedBy:   "8b9c0d1e-2f3a-4b5c-9d0e-1f2a3b4c5d6e",
+				LastModifiedTime: "2026-01-06T09:15:00.000Z",
+			},
+		},
+	}
+}
+
+func TestGolden_GetSchedulingRules(t *testing.T) {
+	rules := schedulingRuleFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(rules); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/scheduling-rules-"+name, buf.String())
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Platform management: environment and license
+// ---------------------------------------------------------------------------
+
+func environmentFixture() platform.EnvironmentInfo {
+	return platform.EnvironmentInfo{
+		EnvironmentID: "abc12345",
+		Type:          "INTERNAL",
+		State:         "ACTIVE",
+		CreateTime:    time.Date(2025, 3, 13, 13, 11, 4, 0, time.UTC),
+		BlockTime:     time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+func licenseFixture() platform.License {
+	return platform.License{
+		Trial:                false,
+		PlatformSubscription: true,
+	}
+}
+
+func TestGolden_GetEnvironment(t *testing.T) {
+	info := environmentFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(info); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "get/environment-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetLicense(t *testing.T) {
+	lic := licenseFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(lic); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "get/license-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_DescribeEnvironment(t *testing.T) {
+	info := environmentFixture()
+
+	formats := map[string]string{
+		"json": "json",
+		"yaml": "yaml",
+		"toon": "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(info); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "describe/environment-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_DescribeLicense(t *testing.T) {
+	lic := licenseFixture()
+
+	formats := map[string]string{
+		"json": "json",
+		"yaml": "yaml",
+		"toon": "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.Print(lic); err != nil {
+				t.Fatalf("Print failed: %v", err)
+			}
+			assertGolden(t, "describe/license-"+name, buf.String())
+		})
+	}
+}
+
+func licenseSettingsFixture() []platform.LicenseSetting {
+	return []platform.LicenseSetting{
+		{Key: "AUTOMATION", Value: "true"},
+		{Key: "AI_FUNCTIONS", Value: "true"},
+		{Key: "LIVE_DEBUGGING", Value: "true"},
+		{Key: "CONTAINER_APPLICATION_MONITORING", Value: "false"},
+	}
+}
+
+func TestGolden_GetLicenseSettings(t *testing.T) {
+	settings := licenseSettingsFixture()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(settings); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/license-settings-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetLicenseSettings_Empty(t *testing.T) {
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList([]platform.LicenseSetting{}); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "empty/license-settings-"+name, buf.String())
+		})
+	}
+}
+
+func serviceUserFixtures() []serviceuser.ServiceUser {
+	return []serviceuser.ServiceUser{
+		{
+			Name:        "automation-alpha",
+			Email:       "automation-alpha@example.invalid",
+			UID:         "00000000-0000-4000-8000-000000000101",
+			CreatedAt:   "2026-03-01T12:00:00Z",
+			Surname:     "ServiceUser",
+			Description: "Synthetic integration identity",
+			GroupUUID:   "00000000-0000-4000-8000-000000000201",
+		},
+		{
+			Name:        "automation-beta",
+			Email:       "automation-beta@example.invalid",
+			UID:         "00000000-0000-4000-8000-000000000102",
+			CreatedAt:   "2026-03-02T13:30:00Z",
+			Surname:     "ServiceUser",
+			Description: "Synthetic reporting identity",
+			GroupUUID:   "00000000-0000-4000-8000-000000000202",
+		},
+	}
+}
+
+func TestGolden_GetServiceUsers(t *testing.T) {
+	users := serviceUserFixtures()
+
+	formats := map[string]string{
+		"table": "table",
+		"wide":  "wide",
+		"json":  "json",
+		"yaml":  "yaml",
+		"csv":   "csv",
+		"toon":  "toon",
+	}
+
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := NewPrinterWithWriter(format, &buf)
+			if err := printer.PrintList(users); err != nil {
+				t.Fatalf("PrintList failed: %v", err)
+			}
+			assertGolden(t, "get/service-users-"+name, buf.String())
+		})
+	}
+}
+
+func TestGolden_GetServiceUsers_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	printer := NewPrinterWithWriter("table", &buf)
+	if err := printer.PrintList([]serviceuser.ServiceUser{}); err != nil {
+		t.Fatalf("PrintList failed: %v", err)
+	}
+	assertGolden(t, "empty/service-users", buf.String())
 }

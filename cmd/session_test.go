@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,9 +18,14 @@ func TestApplyRunEnvironment_ScrubAndRestore(t *testing.T) {
 	t.Setenv("DTCTL_TOKEN", "host-secret")
 	t.Setenv("DTCTL_CONFIG", "/host/config.yaml")
 	t.Setenv("DTCTL_PROFILE", "host-profile")
-	os.Unsetenv("DTCTL_DISABLE_KEYRING")
+	t.Setenv(config.EnvTokenStorage, "file")
+	// This case asserts how applyRunEnvironment treats an *unset* keyring guard,
+	// so clear the TestMain default. Going through t.Setenv first registers the
+	// restore, keeping the unset from leaking into the rest of the test binary.
+	t.Setenv(config.EnvDisableKeyring, "")
+	os.Unsetenv(config.EnvDisableKeyring)
 
-	cleanup, err := applyRunEnvironment(RunOptions{
+	cleanup, err := applyRunEnvironment(context.Background(), RunOptions{
 		Session: &Session{EnvironmentURL: "https://x.example.invalid", Token: "t"},
 		Env:     map[string]string{"DTCTL_PROFILE": "query"},
 	})
@@ -30,6 +36,8 @@ func TestApplyRunEnvironment_ScrubAndRestore(t *testing.T) {
 	require.False(t, present, "session run must scrub host credential env")
 	_, present = os.LookupEnv("DTCTL_CONFIG")
 	require.False(t, present, "session run must scrub host config selection")
+	_, present = os.LookupEnv(config.EnvTokenStorage)
+	require.False(t, present, "session run must scrub DTCTL_TOKEN_STORAGE to prevent credential backend selection")
 	require.Equal(t, "query", os.Getenv("DTCTL_PROFILE"))
 	require.Equal(t, "1", os.Getenv(config.EnvDisableKeyring))
 	require.NotNil(t, runSession)
@@ -39,9 +47,18 @@ func TestApplyRunEnvironment_ScrubAndRestore(t *testing.T) {
 	require.Equal(t, "host-secret", os.Getenv("DTCTL_TOKEN"))
 	require.Equal(t, "/host/config.yaml", os.Getenv("DTCTL_CONFIG"))
 	require.Equal(t, "host-profile", os.Getenv("DTCTL_PROFILE"))
+	require.Equal(t, "file", os.Getenv(config.EnvTokenStorage), "cleanup must restore DTCTL_TOKEN_STORAGE")
 	_, present = os.LookupEnv(config.EnvDisableKeyring)
 	require.False(t, present, "cleanup must restore prior unset-ness")
 	require.Nil(t, runSession)
+}
+
+// TestSessionSyntheticConfigIsSealed verifies that a synthetic session config
+// is sealed so host credential stores cannot shadow the inline token.
+func TestSessionSyntheticConfigIsSealed(t *testing.T) {
+	s := &Session{EnvironmentURL: "https://x.example.invalid", Token: "tok"}
+	cfg := s.syntheticConfig()
+	require.True(t, cfg.InlineCredentialsOnly(), "synthetic session config must be sealed")
 }
 
 func TestRunWithSession_ValidationErrors(t *testing.T) {
@@ -70,6 +87,97 @@ func TestSessionSyntheticConfig(t *testing.T) {
 	token, err := cfg.GetToken(ctx.TokenRef)
 	require.NoError(t, err)
 	require.Equal(t, "tok", token)
+}
+
+// TestSessionSyntheticConfigCarriesStability: the floor is materialized on the
+// synthesized context rather than left to the resolver's default, so a
+// session-backed run states its stability contract the same way it states its
+// safety level — and `dtctl commands` can report it back.
+func TestSessionSyntheticConfigCarriesStability(t *testing.T) {
+	t.Run("empty floor selects the session default, not the CLI default", func(t *testing.T) {
+		ctx, err := (&Session{EnvironmentURL: "https://x.example.invalid", Token: "tok"}).
+			syntheticConfig().CurrentContextObj()
+		require.NoError(t, err)
+		require.Equal(t, SessionDefaultMinStability, ctx.MinStability)
+		require.Equal(t, config.StabilityStable, ctx.MinStability,
+			"an unattended caller reads no [Experimental] badge, so it gets the strict floor")
+		require.NotEqual(t, config.DefaultMinStability, ctx.MinStability,
+			"the divergence from the interactive default is the point of this field")
+	})
+
+	t.Run("explicit floor and exceptions reach the context", func(t *testing.T) {
+		ctx, err := (&Session{
+			EnvironmentURL:      "https://x.example.invalid",
+			Token:               "tok",
+			MinStability:        config.StabilityExperimental,
+			StabilityExceptions: []string{"query --decode-snapshots"},
+		}).syntheticConfig().CurrentContextObj()
+		require.NoError(t, err)
+		require.Equal(t, config.StabilityExperimental, ctx.MinStability)
+		require.Equal(t, []string{"query --decode-snapshots"}, ctx.StabilityExceptions)
+	})
+}
+
+// TestSessionValidatesStability: a floor or exception the caller got wrong
+// fails the request instead of being dropped. Silently ignoring either one
+// widens the surface the host meant to restrict — the opposite of the
+// mistake's intent.
+func TestSessionValidatesStability(t *testing.T) {
+	base := func() *Session {
+		return &Session{EnvironmentURL: "https://x.example.invalid", Token: "tok"}
+	}
+
+	s := base()
+	s.MinStability = "beta"
+	require.ErrorContains(t, s.validate(), "session:")
+
+	// The development tier is not a floor value: there is no way to reach that
+	// surface from a session, by design.
+	s = base()
+	s.MinStability = "development"
+	require.ErrorContains(t, s.validate(), "session:")
+
+	s = base()
+	s.StabilityExceptions = []string{"query --decode-snapshots --extra"}
+	require.ErrorContains(t, s.validate(), "session:")
+
+	s = base()
+	s.MinStability = config.StabilityExperimental
+	s.StabilityExceptions = []string{"get breakpoints", "query --decode-snapshots"}
+	require.NoError(t, s.validate())
+}
+
+// TestSessionScrubsSurfaceShapingEnvVars: which commands exist for a request
+// is the request's decision. A host process that set DTCTL_MIN_STABILITY or
+// DTCTL_DEVELOPMENT for its own CLI use must not thereby reshape every
+// tenant's surface — including registering development commands into requests
+// that never asked for them.
+func TestSessionScrubsSurfaceShapingEnvVars(t *testing.T) {
+	surfaceShaping := []string{
+		config.MinStabilityEnvVar,
+		config.DevelopmentEnvVar,
+		"DTCTL_EXPERIMENTAL_ACCOUNT",
+		"DTCTL_EXPERIMENTAL_SERVE",
+	}
+	for _, key := range surfaceShaping {
+		t.Setenv(key, "host-value")
+	}
+
+	cleanup, err := applyRunEnvironment(context.Background(), RunOptions{
+		Session: &Session{EnvironmentURL: "https://x.example.invalid", Token: "t"},
+	})
+	require.NoError(t, err)
+
+	for _, key := range surfaceShaping {
+		_, present := os.LookupEnv(key)
+		require.False(t, present, "%s must not survive into a session-backed run", key)
+	}
+
+	cleanup()
+
+	for _, key := range surfaceShaping {
+		require.Equal(t, "host-value", os.Getenv(key), "%s must be restored for the host", key)
+	}
 }
 
 // sessionMockEnv is a fake Dynatrace environment that records the
@@ -118,8 +226,7 @@ func TestRunWithSession_TargetsInjectedEnvironment(t *testing.T) {
 	// Hostile host state: none of this may reach the request.
 	t.Setenv("DTCTL_TOKEN", "host-secret")
 	t.Setenv("DTCTL_CONFIG", "/nonexistent/host/config.yaml")
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	code, out := captureRun(t, []string{"get", "buckets", "--plain"}, RunOptions{
 		Session: &Session{EnvironmentURL: env.URL, Token: "tenant-token"},
@@ -140,8 +247,7 @@ func TestRunWithSession_TargetsInjectedEnvironment(t *testing.T) {
 // stop a mutating command before any request is sent.
 func TestRunWithSession_ReadOnlyBlocksMutation(t *testing.T) {
 	env := newSessionMockEnv(t)
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	code, _ := captureRun(t,
 		[]string{"create", "bucket", "--name", "b", "--table", "logs", "--retention", "35", "--plain"},
@@ -161,8 +267,7 @@ func TestRunWithSession_ReadOnlyBlocksMutation(t *testing.T) {
 // mutations, so the same create goes through.
 func TestRunWithSession_WriteAllowedByDefault(t *testing.T) {
 	env := newSessionMockEnv(t)
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	code, _ := captureRun(t,
 		[]string{"create", "bucket", "--name", "b", "--table", "logs", "--retention", "35", "--plain"},
@@ -178,8 +283,7 @@ func TestRunWithSession_WriteAllowedByDefault(t *testing.T) {
 // profile per request, and the host's DTCTL_PROFILE is restored afterwards.
 func TestRunWithSession_ProfileViaEnv(t *testing.T) {
 	t.Setenv("DTCTL_PROFILE", "host-profile-value")
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	code, out := captureRun(t, []string{"get", "--help"}, RunOptions{
 		Session: &Session{EnvironmentURL: "https://x.example.invalid", Token: "t"},
@@ -198,8 +302,7 @@ func TestRunWithSession_ProfileViaEnv(t *testing.T) {
 // x.yaml" where x.yaml lives in a LangChain-style virtual file system).
 func TestRunWithSession_VirtualFile(t *testing.T) {
 	env := newSessionMockEnv(t)
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	virtual := vfs.NewMapFS(map[string][]byte{
 		"bucket.yaml": []byte("bucketName: virtual_bucket\ntable: logs\nretentionDays: 35\n"),
@@ -230,8 +333,7 @@ func TestRunWithSession_VirtualFile(t *testing.T) {
 // defines one.
 func TestRunWithSession_HostAliasesIgnored(t *testing.T) {
 	env := newSessionMockEnv(t)
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE", "")
+	clearAgentEnvVars(t)
 
 	// Without a session this config would expand `bkts` to `get buckets`.
 	isolatedConfig(t, "aliases:\n  bkts: get buckets\ncontexts: []\n")

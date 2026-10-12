@@ -225,19 +225,23 @@ The following shows the exhaustive `--full` output, which describes dtctl's verb
 ### Key schema fields
 
 - **`schema_version`** — integer, incremented on breaking changes to the schema structure. Lets consumers detect incompatibilities without parsing the entire document.
-- **`mutating`** — boolean per verb. Derived from dtctl's safety system (`OperationCreate`, `OperationUpdate`, `OperationDelete`). Agents can use this to assess risk before running a command.
+- **`mutating`** — boolean per verb and per subcommand at every depth: `true` means the command changes tenant state and the safety checker gates it. Derived from dtctl's safety system (`OperationCreate`, `OperationUpdate`, `OperationDelete`). Agents can use this to assess risk before running a command. It says nothing about local state: `auth logout` or `skills install` write local files and are not `mutating`.
+- **`resource_flags`** — per verb (and per nested subcommand), a map of leaf name → the names of that leaf's own flags, such as `"dashboards": ["--mine", "--name", ...]` (full mode only). Under a verb the keys are its `resources`; under a nested subcommand they are the childless entries of its `subcommands`. Names only, to keep the catalog small; `dtctl <verb> <resource> --help` gives types and descriptions. A flag a command redefines under a global's name is its own, and is listed here and in `flags` rather than in `global_flags`.
 - **`safety_operation`** — the safety operation type for mutating commands. Maps directly to dtctl's 4-tier safety levels (a command blocked at `readonly` will have `safety_operation` set; a read-only verb won't).
 - **`access`** — per verb, the access level (`read`/`write`/`delete`/`run`) derived from the verb and its safety operation. Combined with the top-level `resource_scopes` table, an agent can compute any command's required scopes.
 - **`required_scopes_by_resource`** — per verb, a map of resource name → the OAuth/IAM scopes that verb needs for that resource (full mode only). Lets an agent determine the scopes a command needs **before** running it, avoiding mid-task 403s.
 - **`required_scopes`** — per verb, a flat scope list for verbs whose scopes are not per-resource (`query`/`verify`/`wait`, which read Grail via DQL).
 - **`resource_scopes`** — top-level canonical `(resource → {read, write, delete, run})` table. Single source of truth: `pkg/auth.GetScopesForSafetyLevel` (what login requests) is composed from the same table, and a test enforces that every per-command scope is grantable by a safety level.
+- **`stability`** — per verb and per flag, the stability tier (`experimental` or `development`; omitted for `stable`, the default). Tells an agent whether a command's shape is promised to hold across releases before it writes an automation around it. See [STABILITY.md](../STABILITY.md).
+- **`deprecated`** — per verb, the deprecation note (since-version, planned removal, replacement) when one is declared.
+- **`min_stability`** / **`stability_exceptions`** — top-level. The stability floor this invocation is subject to, plus the individual commands and flags admitted below it. Present in every detail tier, so an agent can distinguish "this command does not exist" from "this command is below the contract this deployment accepts".
 - **`time_formats`** — in the JSON schema (not just in `howto`) so agents consuming the structured output have this without a second call.
 
-Since these scope fields were added, `schema_version` is `2`. See [TOKEN_SCOPES.md](../TOKEN_SCOPES.md) for the human-facing scope reference.
+Since the stability fields were added, `schema_version` is `3` (scope fields made it `2`). See [TOKEN_SCOPES.md](../TOKEN_SCOPES.md) for the human-facing scope reference.
 
 ### Default overview (minimal)
 
-The bare `dtctl commands` (no `--brief`/`--full`) emits a **minimal overview**: just the verbs, the resources each operates on, and any nested subcommands. It deliberately omits descriptions, flags, `mutating`/`access`/`safety_operation` status, scopes, `global_flags`, `time_formats`, and `patterns`/`antipatterns`. This is the leanest possible map of "what can dtctl do", meant as the first bootstrap call for an agent. Combined with the TOON default format, the overview is roughly ~4KB — small enough to drop into a system prompt. Agents that need risk/scope metadata step up to `--brief`; agents that need full descriptions and flag documentation step up to `--full`.
+The bare `dtctl commands` (no `--brief`/`--full`) emits a **minimal overview**: just the verbs, the resources each operates on, their stability tier, and any nested subcommands. It deliberately omits descriptions, flags, `mutating`/`access`/`safety_operation` status, scopes, `global_flags`, `time_formats`, and `patterns`/`antipatterns`. This is the leanest possible map of "what can dtctl do", meant as the first bootstrap call for an agent. Combined with the TOON default format, the overview is roughly ~4KB — small enough to drop into a system prompt. Agents that need risk/scope metadata step up to `--brief`; agents that need full descriptions and flag documentation step up to `--full`.
 
 ### Full mode
 
@@ -300,6 +304,7 @@ dtctl delete workflow my-wf --check-scopes -o json  # { "status": "insufficient_
 - Exit code is `5` (`ExitPermissionError`) when scopes are missing, `0` otherwise.
 - In **agent mode**, the verdict uses the standard envelope contract: an `ok`/`unknown` verdict is wrapped in an `{ "ok": true, "result": { "status": ..., ... }, "context": {...} }` envelope, and an `insufficient_scope` verdict is returned as the `{ "ok": false, "error": { "code": "insufficient_scope", "required_scopes": [...], "granted_scopes": [...], "missing_scopes": [...] } }` error envelope (exit 5) — never a bare object.
 - Also in **agent mode**, mutating commands are auto-preflighted *without* `--check-scopes`: a missing scope is returned as the same `insufficient_scope` error envelope before any API call, instead of a raw 403. The preflight makes no network call and degrades to "proceed" on any error.
+- `dtctl query` (every mode, not only agent mode) prechecks the DQL text itself: `fetch <data object>`, `timeseries`, `smartscapeNodes`/`smartscapeEdges` and `getNodeName()`/`getNodeField()` map to the storage scope they read (`pkg/exec/dql_scopes.go`). A provably missing scope is returned as the `insufficient_scope` envelope (exit 5) with a `message` naming the part of the query that needs it. The analysis is a lower bound — it ignores strings and comments, knows only certain mappings, and abstains for opaque tokens, pattern grants, and scope lists read back from the access token's claim — so it can miss a denial but never invent one. A runtime `NOT_AUTHORIZED_FOR_TABLE` maps to the same code.
 
 When a positional arg matches both a verb and a resource, verb takes priority (consistent with dtctl's command resolution).
 

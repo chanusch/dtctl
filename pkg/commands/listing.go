@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/dynatrace-oss/dtctl/pkg/auth"
 	"github.com/dynatrace-oss/dtctl/pkg/plugin"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/version"
 )
 
@@ -24,7 +26,10 @@ import (
 // v2 adds per-verb `access`, per-(verb,resource) `required_scopes_by_resource`,
 // per-verb `required_scopes` (DQL verbs), and a top-level `resource_scopes`
 // canonical table.
-const SchemaVersion = 2
+// v3 adds the stability axis: per-verb and per-flag `stability` /
+// `stability_since`, per-verb `deprecated`, and the top-level `min_stability` /
+// `stability_exceptions` that describe the active floor.
+const SchemaVersion = 3
 
 // Listing is the top-level output of `dtctl commands`.
 type Listing struct {
@@ -40,10 +45,21 @@ type Listing struct {
 	// SafetyLevel is the effective safety level of the active context, the
 	// orthogonal permission axis. Surfaced alongside Profile so both active
 	// constraints are visible at once.
-	SafetyLevel string            `json:"safety_level,omitempty" yaml:"safety_level,omitempty"`
-	GlobalFlags map[string]*Flag  `json:"global_flags,omitempty" yaml:"global_flags,omitempty"`
-	Verbs       map[string]*Verb  `json:"verbs" yaml:"verbs"`
-	Aliases     map[string]string `json:"resource_aliases,omitempty" yaml:"resource_aliases,omitempty"`
+	SafetyLevel string `json:"safety_level,omitempty" yaml:"safety_level,omitempty"`
+	// MinStability is the active stability floor: the weakest contract a command
+	// or flag may offer and still be usable here. Surfaced so an agent can tell
+	// "this command does not exist" from "this command exists but is below the
+	// floor this deployment accepts". Omitted when nothing is filtered.
+	MinStability string `json:"min_stability,omitempty" yaml:"min_stability,omitempty"`
+	// StabilityExceptions are the individual commands and flags admitted below
+	// the floor, each rendered as it is written in config
+	// ("query --decode-snapshots").
+	// Without them a reader of min_stability could not explain why a
+	// below-floor command is present in the tree.
+	StabilityExceptions []string          `json:"stability_exceptions,omitempty" yaml:"stability_exceptions,omitempty"`
+	GlobalFlags         map[string]*Flag  `json:"global_flags,omitempty" yaml:"global_flags,omitempty"`
+	Verbs               map[string]*Verb  `json:"verbs" yaml:"verbs"`
+	Aliases             map[string]string `json:"resource_aliases,omitempty" yaml:"resource_aliases,omitempty"`
 	// ResourceScopes is the canonical (resource, access) → scopes table. Agents
 	// can derive any command's required scopes from this table plus each verb's
 	// access, which is what --brief relies on.
@@ -65,6 +81,24 @@ type Verb struct {
 	SafetyOp    string   `json:"safety_operation,omitempty" yaml:"safety_operation,omitempty"`
 	Access      string   `json:"access,omitempty" yaml:"access,omitempty"`
 	Resources   []string `json:"resources,omitempty" yaml:"resources,omitempty"`
+	// ResourceStability maps a resource to its tier, for the resources whose
+	// tier is not the default `stable`. Resources are rendered as a bare name
+	// list to keep the catalog compact, so there is nowhere on the resource
+	// itself to carry a contract — yet `get breakpoints` being experimental is
+	// exactly what an agent must not learn by having its automation break.
+	// Omitted entirely when every resource under the verb is stable, which is
+	// the overwhelming majority, so the common case costs nothing.
+	ResourceStability map[string]string `json:"resource_stability,omitempty" yaml:"resource_stability,omitempty"`
+	// Stability is the effective stability tier (the weakest along the path from
+	// root), omitted when it is the default `stable`. An agent that reads no
+	// `stability` key is looking at surface it may safely automate against.
+	Stability string `json:"stability,omitempty" yaml:"stability,omitempty"`
+	// StabilitySince is the dtctl version at which the command entered that
+	// tier, so a caller can judge how long it has sat there.
+	StabilitySince string `json:"stability_since,omitempty" yaml:"stability_since,omitempty"`
+	// Deprecated carries the scheduled-removal note for a still-stable command
+	// ("since 0.40.0, remove in 1.0.0, use `get workflows`").
+	Deprecated string `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 	// RequiredScopes is the scope list for verbs whose scopes are not
 	// per-resource (e.g. `query`/`verify`/`wait`, which read Grail via DQL).
 	RequiredScopes []string `json:"required_scopes,omitempty" yaml:"required_scopes,omitempty"`
@@ -73,8 +107,12 @@ type Verb struct {
 	// agents need zero client-side computation; omitted in --brief.
 	RequiredScopesByResource map[string][]string `json:"required_scopes_by_resource,omitempty" yaml:"required_scopes_by_resource,omitempty"`
 	Flags                    map[string]*Flag    `json:"flags,omitempty" yaml:"flags,omitempty"`
-	RequiredArgs             []string            `json:"required_args,omitempty" yaml:"required_args,omitempty"`
-	Subcommands              map[string]*Verb    `json:"subcommands,omitempty" yaml:"subcommands,omitempty"`
+	// ResourceFlags maps each resource to the names of its own flags. Names
+	// only, to keep the full catalog small: `dtctl <verb> <resource> --help`
+	// gives types and descriptions. Omitted in --brief.
+	ResourceFlags map[string][]string `json:"resource_flags,omitempty" yaml:"resource_flags,omitempty"`
+	RequiredArgs  []string            `json:"required_args,omitempty" yaml:"required_args,omitempty"`
+	Subcommands   map[string]*Verb    `json:"subcommands,omitempty" yaml:"subcommands,omitempty"`
 }
 
 // Flag describes a CLI flag.
@@ -83,6 +121,13 @@ type Flag struct {
 	Default     string `json:"default,omitempty" yaml:"default,omitempty"`
 	Required    bool   `json:"required,omitempty" yaml:"required,omitempty"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Stability is the flag's own declared tier, omitted when it is the default
+	// `stable`. A flag may make a weaker promise than its command — that is how
+	// a new idea ships without inventing a new command — so the tier is carried
+	// per flag rather than inherited from the verb.
+	Stability string `json:"stability,omitempty" yaml:"stability,omitempty"`
+	// StabilitySince is the dtctl version at which the flag entered that tier.
+	StabilitySince string `json:"stability_since,omitempty" yaml:"stability_since,omitempty"`
 }
 
 // TimeFormats describes the time input formats dtctl accepts.
@@ -106,6 +151,7 @@ var MutatingVerbs = map[string]string{
 	"delete":  "OperationDelete",
 	"restore": "OperationUpdate",
 	"share":   "OperationUpdate",
+	"claim":   "OperationCreate",
 	"unshare": "OperationUpdate",
 	"update":  "OperationUpdate",
 	"exec":    "OperationCreate", // semantically mutating (runs workflows, functions)
@@ -120,6 +166,7 @@ var MutatingVerbs = map[string]string{
 // cross-references this map against the real command tree to detect drift.
 var ResourceAliases = map[string]string{
 	"wf":   "workflows",
+	"sr":   "scheduling-rules",
 	"dash": "dashboards",
 	"db":   "dashboards",
 	"nb":   "notebooks",
@@ -161,6 +208,27 @@ func advertisedResources(verb string, resources []string) []string {
 			continue
 		}
 		out = append(out, r)
+	}
+	return out
+}
+
+// stabilityOfAdvertised narrows a verb's resource-stability map to the
+// resources the caller is actually shown. Without the narrowing, an
+// unadvertised resource would keep a tier entry after being filtered out of
+// the name list, advertising the very command the filter exists to hide.
+// Returns nil when nothing is left, so the field is omitted rather than empty.
+func stabilityOfAdvertised(verb string, v *Verb) map[string]string {
+	if len(v.ResourceStability) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(v.ResourceStability))
+	for _, r := range advertisedResources(verb, v.Resources) {
+		if lvl, ok := v.ResourceStability[r]; ok {
+			out[r] = lvl
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -259,13 +327,14 @@ func buildVerbs(root *cobra.Command) map[string]*Verb {
 	verbs := make(map[string]*Verb)
 	for _, cmd := range root.Commands() {
 		name := cmd.Name()
-		if hiddenCommands[name] || cmd.Hidden {
+		if hiddenCommands[name] || cmd.Hidden || isHelpTopic(cmd) {
 			continue
 		}
 
 		verb := &Verb{
 			Description: cmd.Short,
 		}
+		annotateStability(verb, cmd)
 
 		// Determine mutating status
 		if safetyOp, ok := MutatingVerbs[name]; ok {
@@ -280,11 +349,12 @@ func buildVerbs(root *cobra.Command) map[string]*Verb {
 		subs := cmd.Commands()
 		if len(subs) > 0 {
 			var resources []string
+			var resourceStability map[string]string
 			subcommands := make(map[string]*Verb)
-			hasResources := false
+			resourceFlags := make(map[string][]string)
 
 			for _, sub := range subs {
-				if sub.Name() == "help" {
+				if sub.Name() == "help" || isHelpTopic(sub) {
 					continue
 				}
 				// A hidden leaf is normally absent from the catalog too. An
@@ -296,58 +366,30 @@ func buildVerbs(root *cobra.Command) map[string]*Verb {
 
 				subName := sub.Name()
 
-				// Check if this subcommand itself has subcommands (nested, like exec copilot)
-				nestedSubs := sub.Commands()
-				hasNested := false
-				for _, ns := range nestedSubs {
-					if !ns.Hidden && ns.Name() != "help" {
-						hasNested = true
-						break
-					}
-				}
-
-				if hasNested {
+				if nested := listedChildren(sub); len(nested) > 0 {
 					// Nested subcommand (e.g., exec copilot -> nl2dql, dql2nl, ...)
-					subVerb := &Verb{
-						Description: sub.Short,
-					}
-					if safetyOp, ok := MutatingVerbs[name]; ok {
-						subVerb.Mutating = true
-						subVerb.SafetyOp = safetyOp
-					}
-					subVerb.Access = string(auth.AccessForVerb(name, subVerb.SafetyOp))
-					if scopes := auth.ScopesForResource(subName, auth.Access(subVerb.Access)); len(scopes) > 0 {
-						subVerb.RequiredScopes = append([]string(nil), scopes...)
-					}
-					nestedNames := make(map[string]*Verb)
-					for _, ns := range nestedSubs {
-						if ns.Hidden || ns.Name() == "help" {
-							continue
-						}
-						nestedNames[ns.Name()] = &Verb{
-							Description: ns.Short,
-						}
-					}
-					if len(nestedNames) > 0 {
-						subVerb.Subcommands = nestedNames
-					}
-
-					// Collect flags from the subcommand
-					subFlags := collectLocalFlags(sub)
-					if len(subFlags) > 0 {
-						subVerb.Flags = subFlags
-					}
-
-					subcommands[subName] = subVerb
+					subcommands[subName] = buildNestedVerb(name, sub, nested)
 				} else {
 					// Treat as a resource
 					resources = append(resources, subName)
-					hasResources = true
+					if lvl := stability.Effective(sub); lvl != stability.Stable {
+						if resourceStability == nil {
+							resourceStability = map[string]string{}
+						}
+						resourceStability[subName] = string(lvl)
+					}
+					if names := flagNames(sub); len(names) > 0 {
+						resourceFlags[subName] = names
+					}
 				}
 			}
 
-			if hasResources {
+			if len(resources) > 0 {
 				verb.Resources = resources
+				verb.ResourceStability = resourceStability
+			}
+			if len(resourceFlags) > 0 {
+				verb.ResourceFlags = resourceFlags
 			}
 			if len(subcommands) > 0 {
 				verb.Subcommands = subcommands
@@ -372,6 +414,106 @@ func buildVerbs(root *cobra.Command) map[string]*Verb {
 	return verbs
 }
 
+// buildNestedVerb describes a subcommand that has subcommands of its own, at
+// any depth. Every level inherits the verb's mutating status: `enable aws
+// monitoring` mutates exactly as `enable` does.
+//
+// A leaf child lists its flags by name in the parent's resource_flags, like a
+// verb's resources do, instead of as full flag objects.
+//
+// children is cmd's listedChildren, which the caller has already computed to
+// decide that cmd nests at all.
+func buildNestedVerb(verbName string, cmd *cobra.Command, children []*cobra.Command) *Verb {
+	v := newNestedNode(verbName, cmd)
+	if flags := collectLocalFlags(cmd); len(flags) > 0 {
+		v.Flags = flags
+	}
+	v.Subcommands = make(map[string]*Verb, len(children))
+	for _, child := range children {
+		if nested := listedChildren(child); len(nested) > 0 {
+			v.Subcommands[child.Name()] = buildNestedVerb(verbName, child, nested)
+			continue
+		}
+		v.Subcommands[child.Name()] = newNestedNode(verbName, child)
+		if names := flagNames(child); len(names) > 0 {
+			if v.ResourceFlags == nil {
+				v.ResourceFlags = make(map[string][]string)
+			}
+			v.ResourceFlags[child.Name()] = names
+		}
+	}
+	return v
+}
+
+// newNestedNode returns a subcommand entry that carries the verb's mutating
+// status, access level and the scopes its name maps to.
+func newNestedNode(verbName string, cmd *cobra.Command) *Verb {
+	v := &Verb{Description: cmd.Short}
+	if safetyOp, ok := MutatingVerbs[verbName]; ok {
+		v.Mutating = true
+		v.SafetyOp = safetyOp
+	}
+	v.Access = string(auth.AccessForVerb(verbName, v.SafetyOp))
+	if scopes := auth.ScopesForResource(cmd.Name(), auth.Access(v.Access)); len(scopes) > 0 {
+		v.RequiredScopes = append([]string(nil), scopes...)
+	}
+	annotateStability(v, cmd)
+	return v
+}
+
+// isHelpTopic reports whether cmd is a cobra help topic (such as
+// `token-scopes`): documentation with nothing to run and nothing the catalog
+// would list beneath it.
+//
+// The children are counted with listedChildren rather than cobra's
+// HasSubCommands, which counts hidden ones. A group whose every child is masked
+// — by a command profile, by the stability floor, or by being hidden outright —
+// has as little to run as a help topic does, and listing it as a resource would
+// advertise a command that only prints its own help.
+func isHelpTopic(cmd *cobra.Command) bool {
+	return !cmd.Runnable() && len(listedChildren(cmd)) == 0
+}
+
+// listedChildren returns the subcommands of cmd that belong in the catalog:
+// visible, not cobra's generated `help`, and not a help topic.
+//
+// One predicate for every level. Asking the question two ways — a hand-rolled
+// loop at the verb level and cobra's HasAvailableSubCommands below it — let the
+// same command be a resource at one depth and a nested verb at another, and
+// left help topics in the catalog everywhere except the top.
+func listedChildren(cmd *cobra.Command) []*cobra.Command {
+	var out []*cobra.Command
+	for _, c := range cmd.Commands() {
+		if c.Hidden || c.Name() == "help" || isHelpTopic(c) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// flagNames returns the sorted keys of cmd's own flags, in the form the flags
+// maps use ("--mine", "-y/--yes"). It describes nothing else about them, so it
+// visits the flags directly rather than building the objects collectLocalFlags
+// would and throwing them away.
+func flagNames(cmd *cobra.Command) []string {
+	var names []string
+	visitOwnFlags(cmd, func(f *pflag.Flag) {
+		names = append(names, flagKey(f))
+	})
+	sort.Strings(names)
+	return names
+}
+
+// flagKey is a flag's key in the catalog's flag maps: "--mine", or
+// "-y/--yes" when it has a shorthand.
+func flagKey(f *pflag.Flag) string {
+	if f.Shorthand != "" {
+		return "-" + f.Shorthand + "/--" + f.Name
+	}
+	return "--" + f.Name
+}
+
 // dqlScopeVerbs read Grail data via DQL; their scopes attach to the verb rather
 // than to a managed resource.
 var dqlScopeVerbs = map[string]bool{"query": true, "verify": true, "wait": true, "inventory": true}
@@ -390,7 +532,19 @@ func populateVerbScopes(name string, verb *Verb) {
 	access := auth.Access(verb.Access)
 	byResource := make(map[string][]string)
 	for _, r := range verb.Resources {
-		if scopes := auth.ScopesForResource(r, access); len(scopes) > 0 {
+		scopes := auth.ScopesForResource(r, access)
+		if len(scopes) == 0 && access != auth.AccessRead {
+			// A resource nested under a mutating verb can itself be read-only
+			// (e.g. `share get` under the mutating `share` verb): such a
+			// resource has no scopes at the verb's own access level by
+			// construction, so falling back to its Read scopes reports what
+			// it actually requires instead of silently omitting it, which
+			// would wrongly read as "needs no token scopes at all". A
+			// genuinely mutating resource never hits this fallback -- it
+			// always has scopes at the verb's access level.
+			scopes = auth.ScopesForResource(r, auth.AccessRead)
+		}
+		if len(scopes) > 0 {
 			byResource[r] = scopes
 		}
 	}
@@ -412,16 +566,18 @@ func collectResourceScopes(verbs map[string]*Verb) map[string]auth.AccessScopes 
 			}
 		}
 	}
-	for _, verb := range verbs {
-		for _, r := range verb.Resources {
+	var addVerb func(v *Verb)
+	addVerb = func(v *Verb) {
+		for _, r := range v.Resources {
 			add(r)
 		}
-		for subName, sub := range verb.Subcommands {
+		for subName, sub := range v.Subcommands {
 			add(subName)
-			for _, r := range sub.Resources {
-				add(r)
-			}
+			addVerb(sub)
 		}
+	}
+	for _, verb := range verbs {
+		addVerb(verb)
 	}
 	if len(table) == 0 {
 		return nil
@@ -429,23 +585,11 @@ func collectResourceScopes(verbs map[string]*Verb) map[string]auth.AccessScopes 
 	return table
 }
 
-// collectLocalFlags extracts non-persistent, non-hidden flags from a command.
+// collectLocalFlags describes a command's own non-hidden flags, leaving out the
+// persistent flags it inherits.
 func collectLocalFlags(cmd *cobra.Command) map[string]*Flag {
 	flags := make(map[string]*Flag)
-	cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden {
-			return
-		}
-		// Skip flags that are inherited from parent (persistent flags)
-		if cmd.InheritedFlags().Lookup(f.Name) != nil {
-			return
-		}
-
-		key := "--" + f.Name
-		if f.Shorthand != "" {
-			key = "-" + f.Shorthand + "/" + key
-		}
-
+	visitOwnFlags(cmd, func(f *pflag.Flag) {
 		fl := &Flag{
 			Type:        flagTypeName(f),
 			Default:     f.DefValue,
@@ -459,9 +603,58 @@ func collectLocalFlags(cmd *cobra.Command) map[string]*Flag {
 			}
 		}
 
-		flags[key] = fl
+		// Read the tier off the flag rather than looking it up by name:
+		// stability.OfFlag searches cmd.Flags(), which does not hold the
+		// command's own persistent flags until cobra merges them — the merge
+		// this collector exists to avoid.
+		// A flag declared stable (stability.MarkFlagStable) is omitted like an
+		// undeclared one: the field is documented as absent for stable.
+		if lvl := stability.OfFlagValue(f); lvl != stability.Undeclared && lvl != stability.Stable {
+			fl.Stability = string(lvl)
+			fl.StabilitySince = stability.SinceFlagValue(f)
+		}
+
+		flags[flagKey(f)] = fl
 	})
 	return flags
+}
+
+// visitOwnFlags invokes fn for each non-hidden flag a command declares itself,
+// once per flag, skipping the persistent flags it inherits.
+//
+// It reads Flags and PersistentFlags directly. cobra's LocalFlags and
+// InheritedFlags merge the parents' persistent flags into the command as a side
+// effect, and doing that to the live command tree leaks state between
+// invocations.
+func visitOwnFlags(cmd *cobra.Command, fn func(*pflag.Flag)) {
+	seen := make(map[string]bool)
+	visit := func(f *pflag.Flag) {
+		if f.Hidden || seen[f.Name] || inheritedFlag(cmd, f) {
+			return
+		}
+		seen[f.Name] = true
+		fn(f)
+	}
+	cmd.Flags().VisitAll(visit)
+	cmd.PersistentFlags().VisitAll(visit)
+}
+
+// inheritedFlag reports whether f is an ancestor's persistent flag rather than
+// one cmd declares itself.
+//
+// The comparison is by identity, not by name: a command may redefine a name an
+// ancestor already uses persistently, and cobra then binds the command's own
+// flag (`dtctl diff --context` is an int line count, not the global string
+// context). Matching on the name alone would drop every such flag from the
+// catalog. Only the nearest ancestor that declares the name matters — that is
+// the one cobra would have merged in.
+func inheritedFlag(cmd *cobra.Command, f *pflag.Flag) bool {
+	for p := cmd.Parent(); p != nil; p = p.Parent() {
+		if pf := p.PersistentFlags().Lookup(f.Name); pf != nil {
+			return pf == f
+		}
+	}
+	return false
 }
 
 // parseRequiredArgs extracts angle-bracket args from a Use string.
@@ -499,8 +692,8 @@ func flagTypeName(f *pflag.Flag) string {
 }
 
 // Minimal is an ultra-compact overview of the command tree: just verbs, their
-// resources, and nested subcommands. It carries no descriptions, flags, scopes,
-// or mutating status. It is the default `dtctl commands` output — a quick map of
+// resources, their stability, and nested subcommands. It carries no
+// descriptions, flags, scopes, or mutating status. It is the default `dtctl commands` output — a quick map of
 // what exists, since most verb-noun commands are self-explanatory. Use --brief
 // or --full for progressively more detail.
 type Minimal struct {
@@ -511,40 +704,95 @@ type Minimal struct {
 	// Profile and SafetyLevel advertise the active command profile and effective
 	// safety level (the two constraints shaping the surface), so agents see them
 	// even in the minimal overview. Omitted when unconstrained.
-	Profile     string                  `json:"profile,omitempty" yaml:"profile,omitempty"`
-	SafetyLevel string                  `json:"safety_level,omitempty" yaml:"safety_level,omitempty"`
-	Verbs       map[string]*MinimalVerb `json:"verbs" yaml:"verbs"`
-	Aliases     map[string]string       `json:"resource_aliases,omitempty" yaml:"resource_aliases,omitempty"`
+	Profile     string `json:"profile,omitempty" yaml:"profile,omitempty"`
+	SafetyLevel string `json:"safety_level,omitempty" yaml:"safety_level,omitempty"`
+	// MinStability and StabilityExceptions advertise the third constraint, the
+	// stability floor, for the same reason: an agent bootstrapping from the
+	// compact catalog must be able to tell "this command does not exist" from
+	// "this command is below the contract this deployment accepts".
+	MinStability        string                  `json:"min_stability,omitempty" yaml:"min_stability,omitempty"`
+	StabilityExceptions []string                `json:"stability_exceptions,omitempty" yaml:"stability_exceptions,omitempty"`
+	Verbs               map[string]*MinimalVerb `json:"verbs" yaml:"verbs"`
+	Aliases             map[string]string       `json:"resource_aliases,omitempty" yaml:"resource_aliases,omitempty"`
+	// Examples are runnable starting points, listed only when their command is in the catalog.
+	Examples []string `json:"examples,omitempty" yaml:"examples,omitempty"`
+}
+
+// minimalExamples are read-only, environment-independent starting points.
+var minimalExamples = []string{
+	`dtctl query 'fetch logs, from:now()-24h | filter loglevel == "ERROR" | summarize count(), by:{dt.service.name} | sort ` + "`count()`" + ` desc | limit 10'`,
+	`dtctl get workflow-executions --started-since 7d`,
+	`dtctl get slos  # definitions; dtctl exec slo <id> evaluates one`,
+	`dtctl describe <resource> <id>`,
 }
 
 // MinimalVerb is a verb reduced to its resources and nested subcommands.
 type MinimalVerb struct {
-	Resources   []string                `json:"resources,omitempty" yaml:"resources,omitempty"`
-	Subcommands map[string]*MinimalVerb `json:"subcommands,omitempty" yaml:"subcommands,omitempty"`
+	Resources []string `json:"resources,omitempty" yaml:"resources,omitempty"`
+	// Stability is carried even here: this is the documented agent bootstrap
+	// path, and "may change in any release" is not something an agent should
+	// have to discover by having its automation break. Omitted for `stable`.
+	Stability string `json:"stability,omitempty" yaml:"stability,omitempty"`
+	// ResourceStability is carried here for the same reason as Stability: a
+	// resource-style command (`get breakpoints`) has no other slot in which to
+	// state its contract.
+	ResourceStability map[string]string       `json:"resource_stability,omitempty" yaml:"resource_stability,omitempty"`
+	Subcommands       map[string]*MinimalVerb `json:"subcommands,omitempty" yaml:"subcommands,omitempty"`
 }
 
 // NewMinimal returns an ultra-compact overview of the command tree. The original
 // listing is not modified.
 func NewMinimal(l *Listing) *Minimal {
 	m := &Minimal{
-		SchemaVersion: l.SchemaVersion,
-		Tool:          l.Tool,
-		Version:       l.Version,
-		CommandModel:  l.CommandModel,
-		Profile:       l.Profile,
-		SafetyLevel:   l.SafetyLevel,
-		Verbs:         make(map[string]*MinimalVerb, len(l.Verbs)),
-		Aliases:       l.Aliases,
+		SchemaVersion:       l.SchemaVersion,
+		Tool:                l.Tool,
+		Version:             l.Version,
+		CommandModel:        l.CommandModel,
+		Profile:             l.Profile,
+		SafetyLevel:         l.SafetyLevel,
+		MinStability:        l.MinStability,
+		StabilityExceptions: l.StabilityExceptions,
+		Verbs:               make(map[string]*MinimalVerb, len(l.Verbs)),
+		Aliases:             l.Aliases,
 	}
 	for name, v := range l.Verbs {
 		m.Verbs[name] = newMinimalVerb(name, v)
 	}
+	for _, ex := range minimalExamples {
+		if exampleAvailable(ex, m.Verbs) {
+			m.Examples = append(m.Examples, ex)
+		}
+	}
 	return m
+}
+
+// exampleAvailable reports whether an example's command is in the catalog.
+func exampleAvailable(ex string, verbs map[string]*MinimalVerb) bool {
+	f := strings.Fields(ex)
+	if len(f) < 2 {
+		return false
+	}
+	v, ok := verbs[f[1]]
+	if !ok {
+		return false
+	}
+	if len(v.Resources) == 0 || len(f) < 3 || strings.HasPrefix(f[2], "<") {
+		return true
+	}
+	if slices.Contains(v.Resources, f[2]) {
+		return true
+	}
+	_, sub := v.Subcommands[f[2]]
+	return sub
 }
 
 // newMinimalVerb strips a verb down to its resources and nested subcommands.
 func newMinimalVerb(verb string, v *Verb) *MinimalVerb {
-	mv := &MinimalVerb{Resources: advertisedResources(verb, v.Resources)}
+	mv := &MinimalVerb{
+		Resources:         advertisedResources(verb, v.Resources),
+		Stability:         v.Stability,
+		ResourceStability: stabilityOfAdvertised(verb, v),
+	}
 	if len(v.Subcommands) > 0 {
 		mv.Subcommands = make(map[string]*MinimalVerb, len(v.Subcommands))
 		for name, sub := range v.Subcommands {
@@ -565,8 +813,13 @@ func NewBrief(l *Listing) *Listing {
 		CommandModel:  l.CommandModel,
 		Profile:       l.Profile,
 		SafetyLevel:   l.SafetyLevel,
-		Verbs:         make(map[string]*Verb, len(l.Verbs)),
-		Aliases:       l.Aliases,
+		// The floor and its exceptions are three short strings; dropping them
+		// from the brief catalog would hide a constraint the agent is subject
+		// to on the very path it is told to bootstrap from.
+		MinStability:        l.MinStability,
+		StabilityExceptions: l.StabilityExceptions,
+		Verbs:               make(map[string]*Verb, len(l.Verbs)),
+		Aliases:             l.Aliases,
 		// Retain patterns/antipatterns: they are the primary grounding agents
 		// rely on after bootstrapping with `dtctl commands --brief -o json`, and
 		// cost only a handful of tokens. Dropping them here would make the
@@ -586,45 +839,22 @@ func NewBrief(l *Listing) *Listing {
 			Mutating:  verb.Mutating,
 			Access:    verb.Access,
 			Resources: advertisedResources(name, verb.Resources),
+			// Retained for the same reason as the verb's own Stability below.
+			ResourceStability: stabilityOfAdvertised(name, verb),
 			// DQL scopes are not derivable from resource_scopes, so retain them.
 			RequiredScopes: verb.RequiredScopes,
+			// Retained for the same reason as mutating status: an agent always
+			// needs to know it before acting.
+			Stability:  verb.Stability,
+			Deprecated: verb.Deprecated,
 		}
 
-		// Simplify flags: just type, drop description/default
-		if verb.Flags != nil {
-			bv.Flags = make(map[string]*Flag, len(verb.Flags))
-			for k, f := range verb.Flags {
-				bf := &Flag{Type: f.Type}
-				if f.Required {
-					bf.Description = "(required)"
-				}
-				bv.Flags[k] = bf
-			}
-		}
+		bv.Flags = briefFlags(verb.Flags)
 
-		// Recurse into subcommands
 		if verb.Subcommands != nil {
 			bv.Subcommands = make(map[string]*Verb, len(verb.Subcommands))
 			for subName, sub := range verb.Subcommands {
-				bs := &Verb{
-					Mutating:       sub.Mutating,
-					Access:         sub.Access,
-					Resources:      sub.Resources,
-					RequiredScopes: sub.RequiredScopes,
-				}
-				if sub.Flags != nil {
-					bs.Flags = make(map[string]*Flag, len(sub.Flags))
-					for k, f := range sub.Flags {
-						bs.Flags[k] = &Flag{Type: f.Type}
-					}
-				}
-				if sub.Subcommands != nil {
-					bs.Subcommands = make(map[string]*Verb, len(sub.Subcommands))
-					for nestedName, nested := range sub.Subcommands {
-						bs.Subcommands[nestedName] = &Verb{Mutating: nested.Mutating}
-					}
-				}
-				bv.Subcommands[subName] = bs
+				bv.Subcommands[subName] = newBriefSubcommand(sub)
 			}
 		}
 
@@ -632,6 +862,50 @@ func NewBrief(l *Listing) *Listing {
 	}
 
 	return brief
+}
+
+// newBriefSubcommand strips a subcommand, and its subcommands at any depth,
+// to what --brief keeps: mutating status, access, scopes and flag types.
+func newBriefSubcommand(sub *Verb) *Verb {
+	bs := &Verb{
+		Mutating:          sub.Mutating,
+		Access:            sub.Access,
+		Resources:         sub.Resources,
+		ResourceStability: sub.ResourceStability,
+		RequiredScopes:    sub.RequiredScopes,
+		Stability:         sub.Stability,
+		Deprecated:        sub.Deprecated,
+	}
+	bs.Flags = briefFlags(sub.Flags)
+	if sub.Subcommands != nil {
+		bs.Subcommands = make(map[string]*Verb, len(sub.Subcommands))
+		for name, nested := range sub.Subcommands {
+			bs.Subcommands[name] = newBriefSubcommand(nested)
+		}
+	}
+	return bs
+}
+
+// briefFlags strips a flag map to what --brief keeps: the type, whether the
+// flag is required, and its stability tier.
+//
+// Stability survives the strip for the same reason mutating status does: it is
+// a constraint on whether the agent may act, not a description it can do
+// without. StabilitySince does not — that is history, and history is what
+// --full is for.
+func briefFlags(flags map[string]*Flag) map[string]*Flag {
+	if flags == nil {
+		return nil
+	}
+	out := make(map[string]*Flag, len(flags))
+	for k, f := range flags {
+		bf := &Flag{Type: f.Type, Stability: f.Stability}
+		if f.Required {
+			bf.Description = "(required)"
+		}
+		out[k] = bf
+	}
+	return out
 }
 
 // FilterByResource returns a new listing containing only verbs that operate on
@@ -686,20 +960,29 @@ func FilterByResource(l *Listing, name string) (*Listing, bool) {
 // resource name to a common stem (stripping trailing "s"). This avoids fragile
 // "append s" heuristics that break for irregular plurals.
 func containsResource(verb *Verb, name string) bool {
-	stem := singularize(name)
 	// Check resources list
 	for _, r := range verb.Resources {
-		if r == name || singularize(r) == stem {
+		if sameResource(r, name) {
 			return true
 		}
 	}
-	// Check subcommands
-	for subName := range verb.Subcommands {
-		if subName == name || singularize(subName) == stem {
+	// Check subcommands, at any depth — the catalog nests as deeply as the
+	// command tree does (`get gcp connections principal`).
+	for subName, sub := range verb.Subcommands {
+		if sameResource(subName, name) {
+			return true
+		}
+		if containsResource(sub, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// sameResource reports whether two catalog names denote the same resource,
+// normalizing both to a common stem so "workflows" matches "workflow".
+func sameResource(a, b string) bool {
+	return a == b || singularize(a) == singularize(b)
 }
 
 // singularize returns a basic singular form by stripping a trailing "s".
@@ -769,6 +1052,11 @@ func RequiredScopesForResource(l *Listing, resource string) []string {
 		for _, s := range auth.ScopesForResource(resolved, auth.Access(verb.Access)) {
 			seen[s] = true
 		}
+		// A name that matches only below the verb (`create aws connection`) has
+		// no entry of its own in the canonical table. Reporting nothing for it
+		// would answer "this needs no scopes" about a command that needs the
+		// ones its enclosing subcommand declares, so take those instead.
+		addNestedScopes(verb, resolved, resource, nil, seen)
 	}
 	out := make([]string, 0, len(seen))
 	for s := range seen {
@@ -776,6 +1064,26 @@ func RequiredScopesForResource(l *Listing, resource string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// addNestedScopes records the scopes needed by every subcommand of v, at any
+// depth, whose name denotes the wanted resource. A node that declares no scopes
+// of its own takes those of its nearest enclosing node that does: `create aws
+// connection` is reached through `create aws`, and that is where the
+// hyperscaler scopes are declared.
+func addNestedScopes(v *Verb, resolved, raw string, inherited []string, seen map[string]bool) {
+	for name, sub := range v.Subcommands {
+		scopes := inherited
+		if len(sub.RequiredScopes) > 0 {
+			scopes = sub.RequiredScopes
+		}
+		if sameResource(name, resolved) || sameResource(name, raw) {
+			for _, s := range scopes {
+				seen[s] = true
+			}
+		}
+		addNestedScopes(sub, resolved, raw, scopes, seen)
+	}
 }
 
 // WriteTo writes the listing to w in the given format ("json", "yaml"/"yml", or "toon").
@@ -817,5 +1125,19 @@ func WriteValue(w io.Writer, v any, format string) error {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(v)
+	}
+}
+
+// annotateStability copies a command's effective stability tier and deprecation
+// note onto its catalog entry. The default tier is left empty rather than
+// written out as "stable": a machine consumer should be able to treat the
+// presence of the key as "read the guarantee before automating this".
+func annotateStability(verb *Verb, cmd *cobra.Command) {
+	if lvl := stability.Effective(cmd); lvl != stability.Stable {
+		verb.Stability = string(lvl)
+		verb.StabilitySince = stability.Since(cmd)
+	}
+	if d, ok := stability.DeprecationOf(cmd); ok {
+		verb.Deprecated = d.Note()
 	}
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,10 +9,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dynatrace-oss/dtctl/pkg/auth"
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/config"
 	"github.com/dynatrace-oss/dtctl/pkg/diagnostic"
 	"github.com/dynatrace-oss/dtctl/pkg/output"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 	"github.com/dynatrace-oss/dtctl/pkg/version"
 )
 
@@ -27,10 +30,13 @@ type checkResult struct {
 var checkKeyringFunc = config.CheckKeyring
 
 // doctorCmd runs health checks on the dtctl configuration and connectivity
-var doctorCmd = &cobra.Command{
-	Use:   "doctor",
-	Short: "Check configuration, connectivity, and authentication health",
-	Long: `Run a series of diagnostic checks to verify that dtctl is properly configured
+var doctorCmd = newDoctorCmd()
+
+func newDoctorCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check configuration, connectivity, and authentication health",
+		Long: `Run a series of diagnostic checks to verify that dtctl is properly configured
 and can communicate with the Dynatrace environment.
 
 Checks performed:
@@ -42,30 +48,33 @@ Checks performed:
   6. Token is retrievable (keyring or config)
   7. Environment URL is reachable (HTTP connectivity)
   8. API authentication works (user identity)`,
-	Example: `  # Run all checks
+		Example: `  # Run all checks
   dtctl doctor
 
   # Run checks for a specific context
   dtctl doctor --context production`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		results := runDoctorChecks()
-		printDoctorResults(results)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			results := runDoctorChecks(cmdContext(cmd))
+			printDoctorResults(cmdContext(cmd), results)
 
-		// Return error if any check failed
-		for _, r := range results {
-			if r.Status == "fail" {
-				return fmt.Errorf("one or more checks failed")
+			// Return error if any check failed
+			for _, r := range results {
+				if r.Status == "fail" {
+					return fmt.Errorf("one or more checks failed")
+				}
 			}
-		}
-		return nil
-	},
+			return nil
+		},
+	}
+	stability.MarkStable(c)
+	return c
 }
 
-func runDoctorChecks() []checkResult {
-	return runDoctorChecksWithClient(&http.Client{Timeout: 10 * time.Second})
+func runDoctorChecks(ctx context.Context) []checkResult {
+	return runDoctorChecksWithClient(ctx, &http.Client{Timeout: 10 * time.Second})
 }
 
-func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
+func runDoctorChecksWithClient(ictx context.Context, httpClient *http.Client) []checkResult {
 	var results []checkResult
 
 	// 1. Version
@@ -76,7 +85,7 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 	})
 
 	// 2. Configuration file
-	cfg, cfgErr := LoadConfig()
+	cfg, cfgErr := loadConfig(ictx)
 	if cfgErr != nil {
 		results = append(results, checkResult{
 			Name:   "Configuration",
@@ -116,7 +125,8 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 		return results
 	}
 
-	safetyLevel := ctx.GetEffectiveSafetyLevel().String()
+	// Config-level: reports the clamped level a local config actually gets.
+	safetyLevel := cfg.GetEffectiveSafetyLevel().String()
 	results = append(results, checkResult{
 		Name:   "Current context",
 		Status: "ok",
@@ -145,26 +155,41 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 	}
 
 	// 5. Keyring status
-	if keyringErr := checkKeyringFunc(); keyringErr != nil {
-		if config.IsFileTokenStorage() {
-			results = append(results, checkResult{
-				Name:   "Token storage",
-				Status: "ok",
-				Detail: fmt.Sprintf("file-based (%s=file); keyring unavailable: %v", config.EnvTokenStorage, keyringErr),
-			})
-		} else {
-			detail := fmt.Sprintf("%s: %v", config.KeyringBackend(), keyringErr)
-			if strings.Contains(keyringErr.Error(), config.ErrMsgCollectionUnlock) {
-				detail += " (run 'dtctl auth login' to create the collection automatically)"
-			}
-			detail += fmt.Sprintf(" (set %s=file to use file-based token storage)", config.EnvTokenStorage)
-			results = append(results, checkResult{
-				Name:   "Token storage",
-				Status: "warn",
-				Detail: detail,
-			})
+	storageIdx := len(results)
+	keyringErr := checkKeyringFunc()
+	switch {
+	case config.IsFileTokenStorage():
+		// Explicit file storage bypasses the keyring for OAuth tokens, so a
+		// reachable keyring is not where they go.
+		detail := fmt.Sprintf("file-based (%s=file)", config.EnvTokenStorage)
+		if getenv(ictx, config.EnvTokenStorage) == "" {
+			detail = fmt.Sprintf("file-based (chosen once; undo: delete %s or set %s=keyring)",
+				config.FileTokenStorageConsentPath(), config.EnvTokenStorage)
 		}
-	} else {
+		if keyringErr != nil {
+			detail += fmt.Sprintf("; keyring unavailable: %v", keyringErr)
+		}
+		results = append(results, checkResult{
+			Name:   "Token storage",
+			Status: "ok",
+			Detail: detail,
+		})
+	case keyringErr != nil:
+		detail := fmt.Sprintf("%s: %v", config.KeyringBackend(), keyringErr)
+		if strings.Contains(keyringErr.Error(), config.ErrMsgCollectionUnlock) {
+			detail += " (run 'dtctl auth login' to create the collection automatically)"
+		}
+		if config.IsKeyringAbsent(keyringErr) {
+			detail += fmt.Sprintf(" (no keyring here: 'dtctl auth login' offers file-based token storage, or set %s=file)", config.EnvTokenStorage)
+		} else {
+			detail += fmt.Sprintf(" (set %s=file to use file-based token storage)", config.EnvTokenStorage)
+		}
+		results = append(results, checkResult{
+			Name:   "Token storage",
+			Status: "warn",
+			Detail: detail,
+		})
+	default:
 		results = append(results, checkResult{
 			Name:   "Token storage",
 			Status: "ok",
@@ -187,12 +212,38 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 		return results
 	}
 
+	// OAuth session state (only applies when the stored token is OAuth). It is
+	// read before the Token row is built because it knows which store the
+	// token was actually found in.
+	session, sessionErr := buildSessionStatusFunc(cfg.CurrentContext, ctx, ctx.TokenRef)
+	oauthSession := sessionErr == nil && session.IsOAuth
+
 	tokenSource := "config file"
-	if config.IsKeyringAvailable() {
+	switch {
+	case oauthSession && session.storage == auth.TokenStorageFile:
+		tokenSource = fmt.Sprintf("file store (%s)", session.Storage)
+	case oauthSession && session.storage == auth.TokenStorageKeyring:
+		tokenSource = fmt.Sprintf("keyring (%s)", session.Storage)
+	case config.IsKeyringAvailable():
 		tokenSource = fmt.Sprintf("keyring (%s)", config.KeyringBackend())
-	} else if config.IsFileTokenStorage() {
+	case config.IsFileTokenStorage():
 		tokenSource = fmt.Sprintf("file store (%s)", config.OAuthStorageBackend())
 	}
+
+	// The keyring probe only tests reads. A keyring that answers reads but
+	// refused the write (macOS `security` exit status 44) leaves the OAuth
+	// token in the file store, so the probe's "ok" would name the wrong
+	// backend (#393).
+	if oauthSession && session.storage == auth.TokenStorageFile &&
+		!config.IsFileTokenStorage() && results[storageIdx].Status == "ok" {
+		results[storageIdx] = checkResult{
+			Name:   "Token storage",
+			Status: "warn",
+			Detail: fmt.Sprintf("%s is reachable, but OAuth token %q is stored in %s, not the keyring (set %s=file to make file storage explicit)",
+				config.KeyringBackend(), ctx.TokenRef, session.Storage, config.EnvTokenStorage),
+		}
+	}
+
 	// Mask token for display
 	maskedToken := token
 	if len(token) > 8 {
@@ -204,8 +255,6 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 		Detail: fmt.Sprintf("retrieved from %s (%s)", tokenSource, maskedToken),
 	})
 
-	// OAuth session state (only applies when the stored token is OAuth)
-	session, sessionErr := buildSessionStatusFunc(cfg.CurrentContext, ctx, ctx.TokenRef)
 	if sessionErr != nil {
 		results = append(results, checkResult{
 			Name:   "OAuth session",
@@ -245,7 +294,7 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 	}
 
 	// 7. API authentication
-	c, clientErr := NewClientFromConfig(cfg)
+	c, clientErr := newClientFromConfig(ictx, cfg)
 	if clientErr != nil {
 		results = append(results, checkResult{
 			Name:   "Authentication",
@@ -298,7 +347,7 @@ func runDoctorChecksWithClient(httpClient *http.Client) []checkResult {
 	return results
 }
 
-func printDoctorResults(results []checkResult) {
+func printDoctorResults(ctx context.Context, results []checkResult) {
 	for _, r := range results {
 		var icon string
 		switch r.Status {
@@ -309,7 +358,7 @@ func printDoctorResults(results []checkResult) {
 		case "fail":
 			icon = output.DoctorFail()
 		}
-		fmt.Printf("%s %-16s %s\n", icon, r.Name, r.Detail)
+		fmt.Fprintf(currentStdout(ctx), "%s %-16s %s\n", icon, r.Name, r.Detail)
 	}
 }
 
@@ -346,4 +395,9 @@ func oauthSessionCheckResult(session *SessionStatus) checkResult {
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
+}
+
+// Declared stable: the invocation and output contract of this command is
+// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
+func init() {
 }

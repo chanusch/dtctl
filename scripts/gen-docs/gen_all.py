@@ -19,7 +19,8 @@ file gets the full skeleton written from scratch.
 
 Input:  `dtctl commands --full -o json`
 Output: <out-dir>/resources/<file>.md, <out-dir>/COMMANDS.md,
-        <out-dir>/TOKEN_SCOPES.md, <out-dir>/INDEX.md (the mapping report)
+        <out-dir>/TOKEN_SCOPES.md, and scripts/gen-docs/INDEX.md (maintainer
+        coverage report, not a published doc)
 """
 from __future__ import annotations
 
@@ -30,7 +31,9 @@ import gen_docs  # reuse the proven core (md_table, matrix, token scopes)
 
 # planned file -> (Title, [singular resource stems], authored_only, note)
 PLAN = {
-    "workflows":            ("Workflows", ["workflow", "workflow-execution", "wfe-task-result"], False, ""),
+    "workflows":            ("Workflows", ["workflow", "workflow-execution", "wfe-task-result",
+                                          "scheduling-rule"], False,
+                             "scheduling rules live on the same Automation API and are documented here."),
     "dql-queries":          ("DQL Queries", [], True,
                              "DQL is the `query`/`exec` verb, not a CRUD resource - author prose + examples; no per-resource ops to generate."),
     "dashboards-notebooks": ("Dashboards & Notebooks", ["dashboard", "notebook"], False, ""),
@@ -56,6 +59,8 @@ PLAN = {
     "platform-tokens":      ("Platform Tokens", ["platform-token", "account-token", "token"], False,
                              "verify: may have no resource_scopes entry in the catalog."),
     "users-groups":         ("Users & Groups", ["user", "group"], False, ""),
+    "environment-license":  ("Environment & License", ["environment", "license", "license-settings"], False,
+                             "read-only platform management surface; license-settings has no describe form."),
 }
 
 
@@ -89,6 +94,9 @@ def resource_managed_body(title: str, stems: list[str], catalog: dict,
     stemset = set(stems)
     out = []
 
+    # Breadcrumb / back-links (inside the managed block so hand-editing can't drop it)
+    out.append(f"[dtctl docs](../README.md) / [Resources](README.md) / {title}\n")
+
     # Supported operations, merged across all matching catalog resource forms
     out.append("## Supported operations\n")
     rows = []
@@ -107,23 +115,45 @@ def resource_managed_body(title: str, stems: list[str], catalog: dict,
     out.append(gen_docs.md_table(
         ["Operation", "Resource", "Command syntax", "Description", "Mutating", "Access"], rows))
 
-    # Flags: verb-level only (catalog has no per-resource flags)
+    # Flags: the catalog carries flags for verbs only, never per resource
+    # (issue #500), so this section can describe what is generatable and must
+    # point at --help for the rest. It must not claim the resource has no flags
+    # of its own: most of them do (`get dashboards --mine`, `delete bucket
+    # --confirm`, `logs workflow-execution --follow`), and asserting their
+    # absence sends a reader away from flags that exist.
     out.append("\n## Flags\n")
-    out.append("These commands take dtctl's **global flags** (`-o/--output`, `--dry-run`, "
+    out.append("These commands take dtctl's **global flags** (`-o/--output`, "
                "`--context`, `--jq`, `-v`, and more). Some verbs add their own flags "
                "(`apply`, `diff`, `query`, `inventory`); see the verb in "
-               "**[COMMANDS.md](../COMMANDS.md)**. No flags are specific to this resource.\n")
+               "**[COMMANDS.md](../COMMANDS.md)**. Individual commands may take further "
+               "flags of their own \u2014 run `dtctl <verb> <resource> --help` for the "
+               "authoritative list.\n")
 
     # Required token scopes, unioned across matching resource_scopes keys
     out.append("\n## Required token scopes\n")
     resource_scopes = catalog.get("resource_scopes", {})
     by_level: dict[str, set[str]] = {}
+    # Alternatives per level, one entry per contributing resource key. They are
+    # shown only when every key at that level declares the same ones: an
+    # alternative to one resource's scopes does not stand in for another's.
+    alts_by_level: dict[str, set[tuple]] = {}
     for key, levels in resource_scopes.items():
         if not matches(key, stemset):
             continue
-        for level, scopes in levels.items():
+        alternatives = levels.get(gen_docs.ALTERNATIVES_KEY, {})
+        for level, scopes in gen_docs.scope_levels(levels):
             by_level.setdefault(level, set()).update(scopes)
-    scope_rows = [[level, ", ".join(f"`{s}`" for s in sorted(by_level[level]))]
+            alts_by_level.setdefault(level, set()).add(
+                tuple(tuple(alt) for alt in alternatives.get(level, [])))
+
+    def level_alternatives(level: str) -> list[list[str]] | None:
+        alts = alts_by_level.get(level, set())
+        if len(alts) != 1:
+            return None
+        only = next(iter(alts))
+        return [list(alt) for alt in only] or None
+
+    scope_rows = [[level, gen_docs.scope_cell(sorted(by_level[level]), level_alternatives(level))]
                   for level in sorted(by_level.keys())]
     out.append(gen_docs.md_table(["Safety level", "Scopes"], scope_rows))
 
@@ -288,6 +318,24 @@ def main() -> int:
         print(f"  resources/{fname}.md: {status}")
         index_rows.append([f"`resources/{fname}.md`", title, ", ".join(stems) or "-", gen])
 
+    # Resource index (item 1): a generated per-page list, used as both the
+    # docs/resources/ folder index and injected into the docs/README.md hub.
+    res_rows = sorted((title, fname) for fname, (title, *_rest) in PLAN.items())
+    def _res_list(prefix: str) -> str:
+        return "".join(f"- [{title}]({prefix}{fname}.md)\n" for title, fname in res_rows)
+    (out_dir / "resources" / "README.md").write_text(
+        "# dtctl resource reference\n\n"
+        "<!-- Do not edit by hand. Generated by scripts/gen-docs from "
+        "`dtctl commands --full -o json`; run `make docs-generate`. -->\n\n"
+        "Per-resource reference for [`dtctl`](https://github.com/dynatrace-oss/dtctl). Each "
+        "page lists supported operations, flags, required token scopes, output, and examples.\n\n"
+        + _res_list("")
+        + "\nBack to the [dtctl documentation hub](../README.md).\n",
+        encoding="utf-8")
+    # docs/README.md stays hand-authored but hosts the generated per-resource list
+    # between GENERATED:resources-index markers.
+    inject_managed(out_dir / "README.md", "resources-index", _res_list("resources/").rstrip() + "\n")
+
     # cross-cutting generated files (reuse proven core)
     (out_dir / "COMMANDS.md").write_text(gen_docs.render_commands_matrix(catalog), encoding="utf-8")
     # TOKEN_SCOPES.md is a HAND-AUTHORED doc (caveats, guidance) with a generator-managed
@@ -299,15 +347,22 @@ def main() -> int:
     # either singular or plural form, so a plain set difference is exact.
     uncovered = sorted(k for k in all_keys if k not in covered_keys)
     idx = ["# INDEX - planned file -> catalog resources\n",
+           "<!-- Coverage report for maintainers, NOT published documentation. Written "
+           "next to the generator (scripts/gen-docs/), regenerated by `make docs-generate`, "
+           "and checked by CI so new/renamed catalog resources surface here. -->\n",
            gen_docs.md_table(["File", "Title", "Catalog stems", "Mode"], index_rows),
            "\n## Catalog resource keys not mapped to any file\n",
            "<!-- SME: these catalog keys did not map to any doc page - expected verbs "
            "and subcommands (login, set-context, openpipeline-*, sdk-version, ...), not "
            "resources; confirm none needs its own page. -->\n\n",
            gen_docs.md_table(["Unmapped key"], [[k] for k in uncovered]) if uncovered else "_none_\n"]
-    (out_dir / "INDEX.md").write_text("\n".join(idx), encoding="utf-8")
+    # INDEX is a maintainer coverage report, not a published doc: write it next to
+    # the generator instead of into the docs tree.
+    index_path = Path(__file__).resolve().parent / "INDEX.md"
+    index_path.write_text("\n".join(idx), encoding="utf-8")
 
-    print(f"wrote {len(PLAN)} resource files + COMMANDS.md + TOKEN_SCOPES.md + INDEX.md to {out_dir}")
+    print(f"wrote {len(PLAN)} resource files + resources/README.md + README.md list + COMMANDS.md + TOKEN_SCOPES.md to {out_dir}")
+    print(f"wrote coverage report to {index_path}")
     print(f"unmapped catalog keys: {uncovered}")
     return 0
 

@@ -28,6 +28,8 @@ type (
 	Environment  = session.Environment
 	// UserInfo is the SSO userinfo response (session.OAuthUserInfo).
 	UserInfo = session.OAuthUserInfo
+	// TokenStorage names the store an OAuth token actually lives in.
+	TokenStorage = session.TokenStorage
 )
 
 const (
@@ -37,11 +39,18 @@ const (
 
 	OAuthTokenPrefix   = session.OAuthTokenPrefix
 	TokenRefreshBuffer = session.TokenRefreshBuffer
+
+	TokenStorageKeyring = session.TokenStorageKeyring
+	TokenStorageFile    = session.TokenStorageFile
 )
 
 // ErrOAuthSessionRevoked mirrors session.ErrOAuthSessionRevoked (same value,
 // so errors.Is works across both names).
 var ErrOAuthSessionRevoked = session.ErrOAuthSessionRevoked
+
+// ErrNoRefreshToken mirrors session.ErrNoRefreshToken (same value, so
+// errors.Is works across both names).
+var ErrNoRefreshToken = session.ErrNoRefreshToken
 
 func NewTokenManager(oauthConfig *OAuthConfig) (*TokenManager, error) {
 	return session.NewTokenManager(oauthConfig)

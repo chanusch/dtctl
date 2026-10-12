@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -11,19 +12,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dynatrace-oss/dtctl/pkg/auth"
 	"github.com/dynatrace-oss/dtctl/pkg/client"
 	"github.com/dynatrace-oss/dtctl/pkg/commands"
+	"github.com/dynatrace-oss/dtctl/pkg/config"
 )
 
 // withScopeState overrides grantedScopesFunc and the relevant global flags for a
 // test, restoring them afterwards.
 func withScopeState(t *testing.T, check, agent bool, format string, granted []string, known bool) {
 	t.Helper()
-	origCheck, origAgent, origFormat, origFunc := checkScopes, agentMode, outputFormat, grantedScopesFunc
-	checkScopes, agentMode, outputFormat = check, agent, format
-	grantedScopesFunc = func() ([]string, bool) { return granted, known }
+	origCheck, origAgent, origFormat, origFunc := gFlags.checkScopes, agentMode(context.Background()), outputFormat(context.Background()), grantedScopesFunc
+	gFlags.checkScopes, gFlags.agentMode, gFlags.outputFormat = check, agent, format
+	grantedScopesFunc = func(context.Context) ([]string, bool) { return granted, known }
 	t.Cleanup(func() {
-		checkScopes, agentMode, outputFormat, grantedScopesFunc = origCheck, origAgent, origFormat, origFunc
+		gFlags.checkScopes, gFlags.agentMode, gFlags.outputFormat, grantedScopesFunc = origCheck, origAgent, origFormat, origFunc
 	})
 }
 
@@ -135,14 +138,14 @@ func TestRequiredScopesFor(t *testing.T) {
 func TestComputeScopeVerdict(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		withScopeState(t, true, false, "json", []string{"automation:workflows:write", "x"}, true)
-		r := computeScopeVerdict("delete", "workflow", []string{"automation:workflows:write"}, scopeRequirementKnown)
+		r := computeScopeVerdict(context.Background(), "delete", "workflow", []string{"automation:workflows:write"}, nil, scopeRequirementKnown)
 		require.Equal(t, scopeStatusOK, r.Status)
 		require.Empty(t, r.MissingScopes)
 	})
 
 	t.Run("insufficient", func(t *testing.T) {
 		withScopeState(t, true, false, "json", []string{"automation:workflows:read"}, true)
-		r := computeScopeVerdict("delete", "workflow", []string{"automation:workflows:write"}, scopeRequirementKnown)
+		r := computeScopeVerdict(context.Background(), "delete", "workflow", []string{"automation:workflows:write"}, nil, scopeRequirementKnown)
 		require.Equal(t, scopeStatusInsufficient, r.Status)
 		require.Equal(t, []string{"automation:workflows:write"}, r.MissingScopes)
 		require.NotEmpty(t, r.Suggestions)
@@ -150,7 +153,7 @@ func TestComputeScopeVerdict(t *testing.T) {
 
 	t.Run("unknown", func(t *testing.T) {
 		withScopeState(t, true, false, "json", nil, false)
-		r := computeScopeVerdict("delete", "workflow", []string{"automation:workflows:write"}, scopeRequirementKnown)
+		r := computeScopeVerdict(context.Background(), "delete", "workflow", []string{"automation:workflows:write"}, nil, scopeRequirementKnown)
 		require.Equal(t, scopeStatusUnknown, r.Status)
 		require.Empty(t, r.GrantedScopes)
 		require.NotEmpty(t, r.Suggestions)
@@ -158,7 +161,7 @@ func TestComputeScopeVerdict(t *testing.T) {
 
 	t.Run("no scopes required", func(t *testing.T) {
 		withScopeState(t, true, false, "json", nil, false)
-		r := computeScopeVerdict("ctx", "set", nil, scopeRequirementNone)
+		r := computeScopeVerdict(context.Background(), "ctx", "set", nil, nil, scopeRequirementNone)
 		require.Equal(t, scopeStatusOK, r.Status)
 		require.Empty(t, r.RequiredScopes)
 	})
@@ -169,7 +172,7 @@ func TestComputeScopeVerdict(t *testing.T) {
 	// that checked nothing is an assurance dtctl has no basis to give.
 	t.Run("per-call requirement is unknown, never ok", func(t *testing.T) {
 		withScopeState(t, true, false, "json", []string{"automation:workflows:write"}, true)
-		r := computeScopeVerdict("exec", "api", nil, scopeRequirementPerCall)
+		r := computeScopeVerdict(context.Background(), "exec", "api", nil, nil, scopeRequirementPerCall)
 		require.Equal(t, scopeStatusUnknown, r.Status,
 			"a check that did not happen must not report ok")
 		require.Empty(t, r.RequiredScopes)
@@ -224,7 +227,7 @@ func TestScopePreflight_AgentBlocksMutatingWhenMissing(t *testing.T) {
 	require.Equal(t, []string{"automation:workflows:write"}, scopeErr.Missing)
 
 	// And it maps to the insufficient_scope envelope + ExitPermissionError.
-	detail := errorToDetail(preErr)
+	detail := errorToDetail(context.Background(), preErr)
 	require.Equal(t, "insufficient_scope", detail.Code)
 	require.Equal(t, []string{"automation:workflows:write"}, detail.MissingScopes)
 	require.Equal(t, client.ExitPermissionError, exitCodeForError(preErr))
@@ -300,7 +303,7 @@ func TestScopePreflight_CheckScopes_AgentMissingUsesErrorEnvelope(t *testing.T) 
 	require.ErrorAs(t, preErr, &scopeErr)
 	require.Equal(t, []string{"automation:workflows:write"}, scopeErr.Missing)
 
-	detail := errorToDetail(preErr)
+	detail := errorToDetail(context.Background(), preErr)
 	require.Equal(t, "insufficient_scope", detail.Code)
 	require.Equal(t, client.ExitPermissionError, exitCodeForError(preErr))
 }
@@ -313,4 +316,131 @@ func TestScopePreflight_DisabledIsNoOp(t *testing.T) {
 	skip, preErr := scopePreflight(cmd, nil)
 	require.False(t, skip)
 	require.NoError(t, preErr)
+}
+
+// withFlagSet sets a flag on one of rootCmd's real commands for the duration of
+// a test and restores it afterwards. rootCmd is shared package state, so a flag
+// left set here would silently change the requirement every later test resolves.
+func withFlagSet(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	f := cmd.Flags().Lookup(name)
+	require.NotNil(t, f, "flag %q is not registered on %q", name, cmd.CommandPath())
+	origValue, origChanged := f.Value.String(), f.Changed
+	require.NoError(t, cmd.Flags().Set(name, value))
+	t.Cleanup(func() {
+		require.NoError(t, f.Value.Set(origValue))
+		f.Changed = origChanged
+	})
+}
+
+func TestScopesForInvocation_FlagAddsScope(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"get", "dashboards"})
+	require.NoError(t, err)
+
+	base, req := scopesForInvocation(cmd, "get", "dashboards")
+	require.Equal(t, scopeRequirementKnown, req)
+	require.NotContains(t, base, "document:documents:admin",
+		"a plain get dashboards does not use admin access")
+
+	// --admin-access lists documents as their effective owner. Without
+	// document:documents:admin the API answers 403 "Insufficient permissions to
+	// request admin-access", so the scope is a certainty whenever the flag is set.
+	withFlagSet(t, cmd, "admin-access", "true")
+	got, req := scopesForInvocation(cmd, "get", "dashboards")
+	require.Equal(t, scopeRequirementKnown, req)
+	require.Contains(t, got, "document:documents:admin")
+	require.Subset(t, got, base, "flag scopes are additive, not a replacement")
+}
+
+func TestScopesForInvocation_FlagOffAddsNothing(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"get", "dashboards"})
+	require.NoError(t, err)
+	base, _ := scopesForInvocation(cmd, "get", "dashboards")
+
+	// An explicit --admin-access=false is a set flag that is nonetheless off; it
+	// must be treated like omitting it.
+	withFlagSet(t, cmd, "admin-access", "false")
+	got, _ := scopesForInvocation(cmd, "get", "dashboards")
+	require.Equal(t, base, got)
+}
+
+func TestScopesForInvocation_UnlistedCommandIsUnchanged(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"delete", "workflow"})
+	require.NoError(t, err)
+	got, req := scopesForInvocation(cmd, "delete", "workflow")
+	want, wantReq := requiredScopesFor("delete", "workflow")
+	require.Equal(t, want, got)
+	require.Equal(t, wantReq, req)
+}
+
+func TestScopePreflight_FlagScopeReachesTheVerdict(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"get", "dashboards"})
+	require.NoError(t, err)
+
+	// A token with the read scope only is sufficient for get dashboards...
+	withScopeState(t, true, true, "json", []string{"document:documents:read"}, true)
+	out := captureScopeStdout(t, func() {
+		skip, preErr := scopePreflight(cmd, nil)
+		require.True(t, skip)
+		require.NoError(t, preErr)
+	})
+	require.Contains(t, out, `"status": "ok"`)
+
+	// ...and insufficient for the same command with --admin-access.
+	withFlagSet(t, cmd, "admin-access", "true")
+	skip, preErr := scopePreflight(cmd, nil)
+	require.False(t, skip)
+	var scopeErr *ScopeError
+	require.ErrorAs(t, preErr, &scopeErr)
+	require.Equal(t, []string{"document:documents:admin"}, scopeErr.Missing)
+}
+
+func TestFlagScopeRequirementsAreWellFormed(t *testing.T) {
+	for key, byFlag := range flagScopeRequirements {
+		path := strings.Fields(key)
+		cmd, _, err := rootCmd.Find(path)
+		require.NoError(t, err, "key %q does not resolve to a command", key)
+		require.Equal(t, "dtctl "+key, cmd.CommandPath(),
+			"key %q must name the leaf command exactly, not an alias or a parent", key)
+
+		// scopesForInvocation only augments a catalog-known requirement, so an
+		// entry on a command without one would be silently dropped.
+		verb, resource := verbResource(cmd)
+		_, req := requiredScopesFor(verb, resource)
+		require.Equal(t, scopeRequirementKnown, req,
+			"%q has no catalog scopes, so a flag scope on it would never be reported", key)
+
+		for name, scopes := range byFlag {
+			require.NotNil(t, cmd.Flags().Lookup(name),
+				"%q has no flag %q — the flag was renamed or removed", key, name)
+			require.NotEmpty(t, scopes, "%q flag %q lists no scopes", key, name)
+		}
+	}
+}
+
+// TestFlagScopesAreRequestedAtLogin guards #375: `--admin-access` needed
+// document:documents:admin, the preflight knew it, and yet no safety level asked
+// for it at `dtctl auth login` — so an OAuth session could never carry it, however
+// the user's IAM policy was set up. A flag scope that no login requests is a flag
+// that cannot work with OAuth at all.
+func TestFlagScopesAreRequestedAtLogin(t *testing.T) {
+	requested := map[string]bool{}
+	for _, level := range []config.SafetyLevel{
+		config.SafetyLevelReadOnly,
+		config.SafetyLevelReadWriteMine,
+		config.SafetyLevelReadWriteAll,
+		config.SafetyLevelDangerouslyUnrestricted,
+	} {
+		for _, s := range auth.GetScopesForSafetyLevel(level) {
+			requested[s] = true
+		}
+	}
+	for key, byFlag := range flagScopeRequirements {
+		for name, scopes := range byFlag {
+			for _, scope := range scopes {
+				require.True(t, requested[scope],
+					"%q --%s needs %q, but no safety level requests it at login", key, name, scope)
+			}
+		}
+	}
 }

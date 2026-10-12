@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/dynatrace-oss/dtctl/pkg/resources/document"
@@ -47,7 +46,7 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 	// Show validation warnings on stderr and collect for result
 	var resultWarnings []string
 	for _, w := range validationWarnings {
-		stderrWarn(&resultWarnings, "%s", w)
+		a.stderrWarn(&resultWarnings, "%s", w)
 	}
 
 	// Count tiles/sections for feedback
@@ -95,7 +94,7 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 
 		// File had no id field before this apply — stamp it back or hint.
 		if resultID != "(ID not returned)" {
-			applyWriteBack(a.sourceFile, resultID, docType, opts.WriteID, false, &resultWarnings)
+			a.applyWriteBack(a.sourceFile, resultID, docType, opts.WriteID, false, &resultWarnings)
 		}
 
 		return a.buildDocumentResult(ActionCreated, docType, resultID, resultName, tileCount, resultWarnings, labels), nil
@@ -104,14 +103,20 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 	// Check if document exists
 	metadata, err := handler.GetMetadata(id)
 	if err != nil {
+		// A nil lookupErr means the document is genuinely absent (404). Anything
+		// else leaves existence unknown and must not reach create.
+		lookupErr := lookupError(docType, id, err)
+
 		// Update semantics: do not silently create a document that does not exist.
 		if opts.RequireExisting {
-			// Distinguish a genuine 404 from transient/auth/other failures so the
-			// "create it instead" hint isn't shown for errors that aren't a 404.
-			if document.IsNotFound(err) {
+			if lookupErr == nil {
 				return nil, fmt.Errorf("%s %q not found (use 'dtctl create document' to create it)", docType, id)
 			}
 			return nil, fmt.Errorf("cannot verify %s %q for update: %w", docType, id, err)
+		}
+
+		if lookupErr != nil {
+			return nil, lookupErr
 		}
 
 		// Document doesn't exist, create it
@@ -129,7 +134,7 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 		createID := id
 		if isUUID(id) {
 			createID = ""
-			stderrWarn(&resultWarnings, "Creating new %s (UUID IDs cannot be reused across tenants)", docType)
+			a.stderrWarn(&resultWarnings, "Creating new %s (UUID IDs cannot be reused across tenants)", docType)
 		}
 
 		result, err := handler.Create(document.CreateRequest{
@@ -158,7 +163,7 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 		// For the non-UUID case the file already carries the id field, so neither
 		// the write-back nor the hint is needed (applyWriteBack treats it as a no-op).
 		fileAlreadyHasID := !isUUID(id) // non-UUID id was in the file and is preserved
-		applyWriteBack(a.sourceFile, resultID, docType, opts.WriteID, fileAlreadyHasID, &resultWarnings)
+		a.applyWriteBack(a.sourceFile, resultID, docType, opts.WriteID, fileAlreadyHasID, &resultWarnings)
 
 		return a.buildDocumentResult(ActionCreated, docType, resultID, resultName, tileCount, resultWarnings, labels), nil
 	}
@@ -173,7 +178,7 @@ func (a *Applier) applyDocument(data []byte, docType string, opts ApplyOptions) 
 	if opts.ShowDiff {
 		existingDoc, err := handler.Get(id)
 		if err == nil && len(existingDoc.Content) > 0 {
-			showJSONDiff(existingDoc.Content, contentData, docType)
+			a.showJSONDiff(existingDoc.Content, contentData, docType)
 		}
 	}
 
@@ -365,7 +370,7 @@ func itemName(docType string) string {
 }
 
 // showJSONDiff displays a simple diff between two JSON documents
-func showJSONDiff(oldData, newData []byte, resourceType string) {
+func (a *Applier) showJSONDiff(oldData, newData []byte, resourceType string) {
 	// Pretty-print both for comparison
 	var oldPretty, newPretty bytes.Buffer
 	if err := json.Indent(&oldPretty, oldData, "", "  "); err != nil {
@@ -378,7 +383,7 @@ func showJSONDiff(oldData, newData []byte, resourceType string) {
 	oldLines := strings.Split(oldPretty.String(), "\n")
 	newLines := strings.Split(newPretty.String(), "\n")
 
-	fmt.Fprintf(os.Stderr, "\n--- existing %s\n+++ new %s\n", resourceType, resourceType)
+	fmt.Fprintf(a.stderrW(), "\n--- existing %s\n+++ new %s\n", resourceType, resourceType)
 
 	// Simple line-by-line diff
 	maxLines := len(oldLines)
@@ -398,36 +403,26 @@ func showJSONDiff(oldData, newData []byte, resourceType string) {
 
 		if oldLine != newLine {
 			if oldLine != "" {
-				fmt.Fprintf(os.Stderr, "- %s\n", oldLine)
+				fmt.Fprintf(a.stderrW(), "- %s\n", oldLine)
 			}
 			if newLine != "" {
-				fmt.Fprintf(os.Stderr, "+ %s\n", newLine)
+				fmt.Fprintf(a.stderrW(), "+ %s\n", newLine)
 			}
 			changes++
 		}
 	}
 
 	if changes == 0 {
-		fmt.Fprintln(os.Stderr, "(no changes)")
+		fmt.Fprintln(a.stderrW(), "(no changes)")
 	}
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(a.stderrW())
 }
 
 // documentURL returns the UI URL for a document
 func (a *Applier) documentURL(docType, id string) string {
-	// Build the app-based URL for the document
 	// e.g., https://abc12345.apps.dynatrace.com -> https://abc12345.apps.dynatrace.com/ui/apps/dynatrace.dashboards/dashboard/<id>
-	switch docType {
-	case "dashboard":
-		return fmt.Sprintf("%s/ui/apps/dynatrace.dashboards/dashboard/%s", a.baseURL, id)
-	case "notebook":
-		return fmt.Sprintf("%s/ui/apps/dynatrace.notebooks/notebook/%s", a.baseURL, id)
-	default:
-		// Custom document types have no known viewer app — the app ID cannot be
-		// derived from the type (e.g. "acme:config" is not served by an app named
-		// "dynatrace.acme:configs"). Emit no URL rather than a broken guess.
-		return ""
-	}
+	// Empty for custom document types, which have no known viewer app.
+	return document.UIURL(a.baseURL, docType, id)
 }
 
 // dryRunDocument performs dry-run validation for a document of any type
@@ -450,7 +445,13 @@ func (a *Applier) dryRunDocument(docType string, doc map[string]interface{}) (Ap
 	if id != "" {
 		handler := document.NewHandler(a.client)
 		metadata, err := handler.GetMetadata(id)
-		if err == nil {
+		if err != nil {
+			// Same rule as apply: only a 404 means create. Otherwise the dry run
+			// would promise a create that the apply behind it refuses.
+			if lookupErr := lookupError(docType, id, err); lookupErr != nil {
+				return nil, lookupErr
+			}
+		} else {
 			action = ActionUpdated
 			existingName = metadata.Name
 		}

@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,6 +353,96 @@ func TestExecuteAndPoll_Cancellation(t *testing.T) {
 	}
 }
 
+// A caller that has already gone away must not start a query at all.
+func TestExecuteAndPoll_PreCancelledContextStartsNothing(t *testing.T) {
+	var requests atomic.Int32
+	h := NewHandler(newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := h.ExecuteAndPoll(ctx, ExecuteRequest{Query: "fetch logs"}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if n := requests.Load(); n != 0 {
+		t.Errorf("sent %d requests for a cancelled caller, want 0", n)
+	}
+}
+
+// Cancelling the caller while the initial execute is in flight still lets the
+// request token come back, so the query Grail already started is cancelled on
+// the backend instead of running on unobserved (#502).
+func TestExecuteAndPoll_CancelDuringExecuteCancelsBackendQuery(t *testing.T) {
+	var cancelledToken atomic.Value
+	var polls atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/storage/query/v1/query:execute", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond) // server-side hold; the caller cancels meanwhile
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(Response{State: "RUNNING", RequestToken: "tok-in-flight"})
+	})
+	mux.HandleFunc("/platform/storage/query/v1/query:poll", func(w http.ResponseWriter, r *http.Request) {
+		polls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/platform/storage/query/v1/query:cancel", func(w http.ResponseWriter, r *http.Request) {
+		cancelledToken.Store(r.URL.Query().Get("request-token"))
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := NewHandler(newTestClient(t, mux))
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	_, err := h.ExecuteAndPoll(ctx, ExecuteRequest{Query: "fetch logs"}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if got, _ := cancelledToken.Load().(string); got != "tok-in-flight" {
+		t.Errorf("backend cancel token = %q, want %q", got, "tok-in-flight")
+	}
+	if n := polls.Load(); n != 0 {
+		t.Errorf("polled %d times after the caller cancelled, want 0", n)
+	}
+}
+
+// An execute that stalls is abandoned executeCancelGrace after the caller
+// cancels, rather than holding the caller for the full executeTimeout.
+func TestExecuteAndPoll_CancelDuringStalledExecuteReturnsAfterGrace(t *testing.T) {
+	prev := executeCancelGrace
+	executeCancelGrace = 50 * time.Millisecond
+	t.Cleanup(func() { executeCancelGrace = prev })
+
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/platform/storage/query/v1/query:execute", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	h := NewHandler(newTestClient(t, mux))
+	t.Cleanup(func() { close(release) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	_, err := h.ExecuteAndPoll(ctx, ExecuteRequest{Query: "fetch logs"}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("returned after %s; a cancelled caller should be released within the grace", elapsed)
+	}
+}
+
 func TestExecuteAndPoll_QueryFailed(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/platform/storage/query/v1/query:execute", func(w http.ResponseWriter, r *http.Request) {
@@ -533,6 +624,106 @@ func TestResponse_GetMetadata(t *testing.T) {
 	if m.QueryID != "q-123" {
 		t.Errorf("QueryID = %q, want q-123", m.QueryID)
 	}
+}
+
+func TestGrailMetadata_UnmarshalApproximationsAndNotifications(t *testing.T) {
+	// Mirrors the metadata.grail shape the query API returns for a successful
+	// but approximate result (#415). Every advisory field must survive decoding.
+	const raw = `{
+		"records": [{"n": "1"}],
+		"metadata": {
+			"grail": {
+				"approximations": ["~ on content: substring match, not token match"],
+				"canonicalQuery": "fetch logs | filter content ~ \"error\" | summarize n=count()",
+				"notifications": [
+					{"severity": "INFO", "notificationType": "EXAMPLE_NOTICE", "message": "an advisory note"}
+				],
+				"sampled": true,
+				"scannedRecords": 1
+			}
+		}
+	}`
+
+	var r Response
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	g := r.GetMetadata()
+	if g == nil {
+		t.Fatal("expected grail metadata")
+	}
+	want := []string{"~ on content: substring match, not token match"}
+	if len(g.Approximations) != 1 || g.Approximations[0] != want[0] {
+		t.Errorf("Approximations = %q, want %q", g.Approximations, want)
+	}
+	if got := r.GetApproximations(); len(got) != 1 || got[0] != want[0] {
+		t.Errorf("GetApproximations() = %q, want %q", got, want)
+	}
+	if !g.Sampled {
+		t.Error("Sampled = false, want true")
+	}
+	if n := r.GetNotifications(); len(n) != 1 || n[0].Severity != "INFO" || n[0].Message != "an advisory note" {
+		t.Errorf("notifications = %+v, want the one INFO notification", n)
+	}
+}
+
+func TestApproximations_LenientDecoding(t *testing.T) {
+	// An unexpected entry shape must not fail the whole response: the list is
+	// advisory, and the stream decoder aborts on any metadata decode error.
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"strings", `["a", "b"]`, []string{"a", "b"}},
+		{"empty list", `[]`, nil},
+		{"null", `null`, nil},
+		{"object with message", `[{"message": "approx"}]`, []string{"approx"}},
+		{"object without message", `[{"kind": "x"}]`, []string{`{"kind":"x"}`}},
+		{"mixed", `["a", {"message": "b"}, 3, null]`, []string{"a", "b", "3"}},
+		{"single string", `"only"`, []string{"only"}},
+		{"not a list", `{"message": "x"}`, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var g GrailMetadata
+			if err := json.Unmarshal([]byte(`{"approximations": `+tt.raw+`, "scannedRecords": 7}`), &g); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if g.ScannedRecords != 7 {
+				t.Errorf("ScannedRecords = %d, want 7 (sibling fields must still decode)", g.ScannedRecords)
+			}
+			if len(g.Approximations) != len(tt.want) {
+				t.Fatalf("Approximations = %q, want %q", g.Approximations, tt.want)
+			}
+			for i := range tt.want {
+				if g.Approximations[i] != tt.want[i] {
+					t.Errorf("Approximations[%d] = %q, want %q", i, g.Approximations[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResponse_GetApproximations(t *testing.T) {
+	t.Run("none", func(t *testing.T) {
+		if got := (&Response{}).GetApproximations(); got != nil {
+			t.Errorf("got %q, want nil", got)
+		}
+	})
+	t.Run("from result metadata", func(t *testing.T) {
+		r := &Response{
+			Metadata: &Metadata{Grail: &GrailMetadata{}},
+			Result: &Result{
+				Metadata: &Metadata{
+					Grail: &GrailMetadata{Approximations: Approximations{"approx"}},
+				},
+			},
+		}
+		if got := r.GetApproximations(); len(got) != 1 || got[0] != "approx" {
+			t.Errorf("got %q, want [approx]", got)
+		}
+	})
 }
 
 func TestMetricInfo_UnmarshalFromAPI(t *testing.T) {

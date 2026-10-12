@@ -14,6 +14,7 @@ import (
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	workflowpkg "github.com/dynatrace-oss/dtctl/pkg/resources/workflow"
 	"github.com/dynatrace-oss/dtctl/pkg/safety"
+	"github.com/dynatrace-oss/dtctl/pkg/stability"
 )
 
 // execWorkflowResult is the structured response for agent mode.
@@ -47,6 +48,15 @@ func (v *singleUseStringValue) Set(value string) error {
 	return nil
 }
 
+// Reset clears the "already provided" marker. The per-invocation flag reset
+// (resetFlagSet) restores flags by calling Reset when a Value implements it;
+// routing the reset through Set(DefValue) would trip the single-use guard
+// before the real parse even starts.
+func (v *singleUseStringValue) Reset() {
+	v.set = false
+	*v.value = ""
+}
+
 func (v *singleUseStringValue) String() string {
 	if v.value == nil {
 		return ""
@@ -59,108 +69,115 @@ func (v *singleUseStringValue) Type() string {
 }
 
 // execWorkflowCmd executes a workflow
-var execWorkflowCmd = &cobra.Command{
-	Use:     "workflow <workflow-id>",
-	Aliases: []string{"wf"},
-	Short:   "Execute a workflow",
-	Long:    "Execute an automation workflow. Workflow input must be provided as a JSON object via --input.",
-	Example: strings.Join([]string{
-		"  # Execute workflow",
-		"  dtctl exec workflow my-workflow-id",
-		"",
-		"  # Execute with workflow input",
-		"  dtctl exec workflow my-workflow-id --input '{\"foo\":\"bar\", \"baz\":3}'",
-		"",
-		"  # Execute and wait for completion",
-		"  dtctl exec workflow my-workflow-id --wait",
-		"",
-		"  # Execute with custom timeout",
-		"  dtctl exec workflow my-workflow-id --wait --timeout 10m",
-		"",
-		"  # Execute, wait, and print each task's return value when done",
-		"  dtctl exec workflow my-workflow-id --wait --show-results",
-	}, "\n"),
-	Args: cobra.ExactArgs(1),
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		showResults, _ := cmd.Flags().GetBool("show-results")
-		wait, _ := cmd.Flags().GetBool("wait")
-		if showResults && !wait {
-			return fmt.Errorf("--show-results requires --wait")
-		}
+var execWorkflowCmd = newExecWorkflowCmd()
 
-		_, err := buildWorkflowExecutionRequest(cmd)
-		return err
-	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		workflowID := args[0]
+func newExecWorkflowCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:     "workflow <workflow-id>",
+		Aliases: []string{"wf"},
+		Short:   "Execute a workflow",
+		Long:    "Execute an automation workflow. Workflow input must be provided as a JSON object via --input.",
+		Example: strings.Join([]string{
+			"  # Execute workflow",
+			"  dtctl exec workflow my-workflow-id",
+			"",
+			"  # Execute with workflow input",
+			"  dtctl exec workflow my-workflow-id --input '{\"foo\":\"bar\", \"baz\":3}'",
+			"",
+			"  # Execute and wait for completion",
+			"  dtctl exec workflow my-workflow-id --wait",
+			"",
+			"  # Execute with custom timeout",
+			"  dtctl exec workflow my-workflow-id --wait --timeout 10m",
+			"",
+			"  # Execute, wait, and print each task's return value when done",
+			"  dtctl exec workflow my-workflow-id --wait --show-results",
+		}, "\n"),
+		Args: cobra.ExactArgs(1),
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			showResults, _ := cmd.Flags().GetBool("show-results")
+			wait, _ := cmd.Flags().GetBool("wait")
+			if showResults && !wait {
+				return fmt.Errorf("--show-results requires --wait")
+			}
 
-		// Triggering a workflow runs actions that create and modify resources, so
-		// it is gated as a create — the `exec` verb's declared operation.
-		_, c, err := SetupWithSafety(safety.OperationCreate)
-		if err != nil {
+			_, err := buildWorkflowExecutionRequest(cmd)
 			return err
-		}
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			workflowID := args[0]
 
-		executor := exec.NewWorkflowExecutor(c)
-
-		request, err := buildWorkflowExecutionRequest(cmd)
-		if err != nil {
-			return err
-		}
-		wait, _ := cmd.Flags().GetBool("wait")
-		// Simple workflow execution details are only available from the API for monitored
-		// runs. The --wait path polls that API surface, so it must opt into monitor=true.
-		request.Monitor = wait
-
-		result, err := executor.Execute(workflowID, request)
-		if err != nil {
-			return err
-		}
-
-		// Agent mode: collect everything into a structured envelope
-		printer := NewPrinter()
-		ap := enrichAgent(printer, "exec", "workflow")
-		if ap != nil {
-			return execWorkflowAgent(cmd, c, executor, result, ap)
-		}
-
-		// Human mode: interactive output
-		fmt.Printf("Workflow execution started\n")
-		fmt.Printf("Execution ID: %s\n", result.ID)
-		fmt.Printf("State: %s\n", result.State)
-
-		// Handle --wait flag
-		if wait {
-			fmt.Printf("\nWaiting for execution to complete...\n")
-
-			status, err := execWorkflowWait(cmd, executor, result.ID)
+			// Triggering a workflow runs actions that create and modify resources, so
+			// it is gated as a create — the `exec` verb's declared operation.
+			_, c, err := setupWithSafety(cmdContext(cmd), safety.OperationCreate)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("\nExecution completed\n")
-			fmt.Printf("Final State: %s\n", status.State)
-			if status.StateInfo != nil && *status.StateInfo != "" {
-				fmt.Printf("State Info: %s\n", *status.StateInfo)
-			}
-			fmt.Printf("Duration: %s\n", formatExecutionDuration(status.Runtime))
+			executor := exec.NewWorkflowExecutor(c)
 
-			// Print task results if --show-results is set
-			showResults, _ := cmd.Flags().GetBool("show-results")
-			if showResults {
-				if err := execWorkflowShowResults(c, result.ID, printer); err != nil {
+			request, err := buildWorkflowExecutionRequest(cmd)
+			if err != nil {
+				return err
+			}
+			wait, _ := cmd.Flags().GetBool("wait")
+			// Simple workflow execution details are only available from the API for monitored
+			// runs. The --wait path polls that API surface, so it must opt into monitor=true.
+			request.Monitor = wait
+
+			result, err := executor.Execute(workflowID, request)
+			if err != nil {
+				return err
+			}
+
+			// Agent mode: collect everything into a structured envelope
+			printer := newPrinterCtx(cmdContext(cmd))
+			ap := enrichAgent(printer, "exec", "workflow")
+			if ap != nil {
+				return execWorkflowAgent(cmd, c, executor, result, ap)
+			}
+
+			// Human mode: interactive output
+			fmt.Fprintf(currentStdout(cmdContext(cmd)), "Workflow execution started\n")
+			fmt.Fprintf(currentStdout(cmdContext(cmd)), "Execution ID: %s\n", result.ID)
+			fmt.Fprintf(currentStdout(cmdContext(cmd)), "State: %s\n", result.State)
+
+			// Handle --wait flag
+			if wait {
+				fmt.Fprintf(currentStdout(cmdContext(cmd)), "\nWaiting for execution to complete...\n")
+
+				status, err := execWorkflowWait(cmd, executor, result.ID)
+				if err != nil {
 					return err
+				}
+
+				fmt.Fprintf(currentStdout(cmdContext(cmd)), "\nExecution completed\n")
+				fmt.Fprintf(currentStdout(cmdContext(cmd)), "Final State: %s\n", status.State)
+				if status.StateInfo != nil && *status.StateInfo != "" {
+					fmt.Fprintf(currentStdout(cmdContext(cmd)), "State Info: %s\n", *status.StateInfo)
+				}
+				fmt.Fprintf(currentStdout(cmdContext(cmd)), "Duration: %s\n", formatExecutionDuration(status.Runtime))
+
+				// Print task results if --show-results is set
+				showResults, _ := cmd.Flags().GetBool("show-results")
+				if showResults {
+					if err := execWorkflowShowResults(cmdContext(cmd), c, result.ID, printer); err != nil {
+						return err
+					}
+				}
+
+				// Return error if execution failed
+				if status.State == "ERROR" {
+					return fmt.Errorf("workflow execution failed")
 				}
 			}
 
-			// Return error if execution failed
-			if status.State == "ERROR" {
-				return fmt.Errorf("workflow execution failed")
-			}
-		}
-
-		return nil
-	},
+			return nil
+		},
+	}
+	stability.Mark(c, stability.Experimental, pre10Since)
+	registerWorkflowExecFlags(c)
+	return c
 }
 
 // execWorkflowWait handles the --wait polling loop and returns the final status.
@@ -175,26 +192,26 @@ func execWorkflowWait(cmd *cobra.Command, executor *exec.WorkflowExecutor, execu
 		Timeout:      timeout,
 	}
 
-	return executor.WaitForCompletion(context.Background(), executionID, opts)
+	return executor.WaitForCompletion(cmdContext(cmd), executionID, opts)
 }
 
 // execWorkflowShowResults prints per-task results in human-readable format.
-func execWorkflowShowResults(c *client.Client, executionID string, printer output.Printer) error {
+func execWorkflowShowResults(ctx context.Context, c *client.Client, executionID string, printer output.Printer) error {
 	execHandler := workflowpkg.NewExecutionHandler(c)
 	tasks, err := execHandler.ListTasks(executionID)
 	if err != nil {
 		return fmt.Errorf("failed to list tasks: %w", err)
 	}
 	if len(tasks) > 0 {
-		fmt.Printf("\nTask Results:\n")
+		fmt.Fprintf(currentStdout(ctx), "\nTask Results:\n")
 		for _, task := range tasks {
-			fmt.Printf("\n--- %s [%s] ---\n", task.Name, task.State)
+			fmt.Fprintf(currentStdout(ctx), "\n--- %s [%s] ---\n", task.Name, task.State)
 			if task.Result == nil {
-				fmt.Printf("(no structured return value)\n")
+				fmt.Fprintf(currentStdout(ctx), "(no structured return value)\n")
 				continue
 			}
 			if err := printer.Print(task.Result); err != nil {
-				fmt.Printf("(failed to print result: %v)\n", err)
+				fmt.Fprintf(currentStdout(ctx), "(failed to print result: %v)\n", err)
 			}
 		}
 	}
@@ -343,8 +360,4 @@ func registerWorkflowExecFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("show-results", false, "print the result of each task after execution completes (requires --wait)")
 	_ = cmd.Flags().MarkDeprecated("params", "It targets legacy execution metadata. Workflow input must be provided as a JSON object via --input.")
 	_ = cmd.Flags().MarkHidden("params")
-}
-
-func init() {
-	registerWorkflowExecFlags(execWorkflowCmd)
 }
