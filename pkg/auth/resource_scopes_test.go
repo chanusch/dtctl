@@ -12,7 +12,7 @@ import (
 // preserving: login must request exactly the same scopes as before. Update this
 // table only with an intentional, reviewed change to login behavior.
 var baselineScopes = map[config.SafetyLevel][]string{
-	config.SafetyLevelReadOnly: { // 41 scopes
+	config.SafetyLevelReadOnly: { // 43 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
@@ -42,6 +42,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"storage:user.replays:read",
 		"storage:fieldsets:read",
 		"storage:fieldset-definitions:read",
+		"storage:profiles:read",
 		"storage:buckets:read",
 		"storage:bucket-definitions:read",
 		"storage:files:read",
@@ -54,8 +55,9 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"notification:notifications:read",
 		"hub:catalog:read",
 		"openpipeline:configurations:read",
+		"environment-api:dashboard-3rdgen-migration:execute",
 	},
-	config.SafetyLevelReadWriteMine: { // 56 scopes
+	config.SafetyLevelReadWriteMine: { // 57 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
@@ -112,8 +114,9 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"document:environment-shares:claim",
 		"email:emails:send",
 		"dev-obs:breakpoints:set",
+		"environment-api:dashboard-3rdgen-migration:execute",
 	},
-	config.SafetyLevelReadWriteAll: { // 76 scopes
+	config.SafetyLevelReadWriteAll: { // 78 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
@@ -143,6 +146,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"storage:user.replays:read",
 		"storage:fieldsets:read",
 		"storage:fieldset-definitions:read",
+		"storage:profiles:read",
 		"storage:buckets:read",
 		"storage:bucket-definitions:read",
 		"storage:files:read",
@@ -175,6 +179,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"app-engine:functions:run",
 		"email:emails:send",
 		"dev-obs:breakpoints:set",
+		"environment-api:dashboard-3rdgen-migration:execute",
 		"document:environment-shares:read",
 		"document:environment-shares:write",
 		"document:environment-shares:claim",
@@ -191,7 +196,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"app-engine:edge-connects:write",
 		"notification:notifications:write",
 	},
-	config.SafetyLevelDangerouslyUnrestricted: { // 84 scopes
+	config.SafetyLevelDangerouslyUnrestricted: { // 86 scopes
 		"openid",
 		"offline_access",
 		"automation:workflows:read",
@@ -221,6 +226,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"storage:user.replays:read",
 		"storage:fieldsets:read",
 		"storage:fieldset-definitions:read",
+		"storage:profiles:read",
 		"storage:buckets:read",
 		"storage:bucket-definitions:read",
 		"storage:files:read",
@@ -276,6 +282,7 @@ var baselineScopes = map[config.SafetyLevel][]string{
 		"notification:notifications:write",
 		"email:emails:send",
 		"dev-obs:breakpoints:set",
+		"environment-api:dashboard-3rdgen-migration:execute",
 	},
 }
 
